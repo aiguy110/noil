@@ -13,11 +13,11 @@ A fiber is a group of log lines that are related by shared attributes and tempor
 A fiber type is a template that defines:
 
 - **Temporal constraint**: Maximum time gap between consecutive logs (session windowing) or from the first log
-- **Key attributes**: Attributes that form the fiber's identity (e.g., `request_id`)
-- **Enrichment attributes**: Optional attributes populated opportunistically
+- **Attributes**: Named values extracted from logs or derived via interpolation; persist on fiber after close
+- **Keys**: Attributes marked with `key: true`; used for fiber matching/merging while open, released on close
 - **Source patterns**: Per-source regex patterns that filter logs and extract attributes
 
-A fiber's identity is the tuple `(fiber_type, key_attribute_values, session_id)`. Two logs belong to the same fiber if they match the same fiber type, produce identical key attribute values, and fall within the temporal continuity constraint.
+Each fiber is identified by a UUID assigned at creation. Keys enable matching and merging: when a log's keys match an open fiber, it joins that fiber; when keys match multiple fibers, those fibers merge. Keys only exist while a fiber is open—when closed, keys are released but attributes persist.
 
 Note: `max_gap` may be `infinite` (never closes due to time). One use case: each source can have its own never-closing fiber that serves as a jumping-off point for navigation in the UI.
 
@@ -86,11 +86,11 @@ Source Readers → Sequencer → Raw Log Store → Fiber Processor → Fiber Mem
 
 **Sequencer**: Merges multiple source streams into global timestamp order using a min-heap. Emits logs (or batches) only when safe based on watermarks from all sources.
 
-**Raw Log Store**: Durable storage (ClickHouse) of all ingested logs. Source of truth for reprocessing.
+**Raw Log Store**: Durable storage (DuckDB initially; storage backend is abstracted for future flexibility). Source of truth for reprocessing.
 
 **Fiber Processor**: Evaluates fiber type rules against each log, manages active fiber sessions, computes fiber membership.
 
-**Storage Writer**: Batched writes to ClickHouse for both raw logs and fiber memberships.
+**Storage Writer**: Batched writes to storage for both raw logs and fiber memberships.
 
 ### Distributed Deployment
 
@@ -206,7 +206,6 @@ fiber_types:
         
     sources:
       program1:
-        match: first  # first | all
         patterns:
           # release_matching_peer_keys: for each listed key extracted by this
           # pattern, remove that (key, value) from OTHER open fibers first
@@ -361,21 +360,35 @@ CREATE INDEX idx_raw_logs_timestamp ON raw_logs(timestamp);
 CREATE INDEX idx_raw_logs_source ON raw_logs(source_id);
 ```
 
+### Fibers Table
+
+```sql
+CREATE TABLE fibers (
+    fiber_id UUID PRIMARY KEY,
+    fiber_type VARCHAR NOT NULL,
+    config_version UBIGINT NOT NULL,
+    attributes JSON,
+    first_activity TIMESTAMPTZ NOT NULL,
+    last_activity TIMESTAMPTZ NOT NULL,
+    closed BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX idx_fibers_type ON fibers(fiber_type);
+CREATE INDEX idx_fibers_config ON fibers(config_version);
+```
+
 ### Fiber Memberships Table
+
+A many-to-many join table linking logs to fibers.
 
 ```sql
 CREATE TABLE fiber_memberships (
     log_id UUID NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
+    fiber_id UUID NOT NULL,
     config_version UBIGINT NOT NULL,
-    fiber_type VARCHAR NOT NULL,
-    fiber_id VARCHAR NOT NULL,
-    key_attributes JSON,
-    enrichment_attributes JSON,
-    PRIMARY KEY (config_version, fiber_type, fiber_id, log_id)
+    PRIMARY KEY (log_id, fiber_id)
 );
 
-CREATE INDEX idx_memberships_log ON fiber_memberships(log_id);
 CREATE INDEX idx_memberships_fiber ON fiber_memberships(fiber_id);
 ```
 
@@ -411,7 +424,7 @@ The sequencer's emit timestamp is the logical clock for fiber processing. "Curre
 
 ### Soft Fiber Closure
 
-A fiber is eligible for closure when `logical_clock - fiber.last_updated > max_gap`. This works correctly for both live and historical ingestion.
+A fiber is eligible for closure when `logical_clock - fiber.last_activity > max_gap`. This works correctly for both live and historical ingestion.
 
 ### Watermark-Based Sequencing
 
@@ -475,7 +488,7 @@ Checkpoints written periodically to configured path.
 
 ## Additional Documentation
 
-- **[docs/FIBER_PROCESSING.md](docs/FIBER_PROCESSING.md)**: Detailed explanation of fiber correlation semantics, the primary/associative key model, session markers, and worked examples.
+- **[docs/FIBER_PROCESSING.md](docs/FIBER_PROCESSING.md)**: Detailed explanation of fiber correlation semantics, the key/attribute model, session control actions, and worked examples.
 
 ## File Structure
 
@@ -533,10 +546,12 @@ noil/
 - **Fiber**: A group of related log lines identified by UUID, with shared keys while open and persistent attributes
 - **Fiber Type**: A rule template defining how to identify and group logs into fibers
 - **Attribute**: A named value extracted from logs or derived via interpolation; persists on fiber after close
-- **Key**: An attribute marked with `key: true`; used for fiber matching and merging while fiber is open
-- **Derived Attribute**: An attribute computed via string interpolation from other attributes (e.g., `"${ip}:${port}"`)
+- **Key**: An attribute marked with `key: true`; used for fiber matching and merging while fiber is open; released when fiber closes
+- **Derived Attribute**: An attribute computed via string interpolation from other attributes (e.g., `"${ip}:${port}"`); only defined when all referenced attributes have values
 - **Pattern**: A regex that matches log lines and extracts named capture groups as attributes
-- **release_matching_peer_keys**: Pattern action that removes matching key values from other open fibers before processing
-- **release_self_keys**: Pattern action that removes specified keys from the current fiber after processing
+- **release_matching_peer_keys**: Pattern action that removes matching `(key, value)` pairs from OTHER open fibers before processing (useful for "request start" patterns to prevent new requests from merging with old ones)
+- **release_self_keys**: Pattern action that removes specified keys from THIS fiber after processing (useful for "request end" patterns)
+- **close**: Pattern action that closes the fiber after processing, releasing all keys
 - **Watermark**: A timestamp guarantee that no earlier logs will arrive from a source
 - **Sequencer**: A component that merges log streams into global timestamp order
+- **Logical Clock**: The timestamp of the most recently processed log; used for fiber timeout decisions instead of wall clock time
