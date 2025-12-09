@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Resolve config path
-    let config_path = resolve_config_path(cli.config);
+    let config_path = noil::config::resolve_config_path(cli.config.as_deref());
 
     // Dispatch to appropriate handler
     match cli.command {
@@ -60,26 +60,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-fn resolve_config_path(explicit_path: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(path) = explicit_path {
-        return Some(path);
-    }
-
-    // Check ~/.config/noil/config.yml
-    if let Some(home_dir) = dirs::home_dir() {
-        let user_config = home_dir.join(".config/noil/config.yml");
-        if user_config.exists() {
-            return Some(user_config);
-        }
-    }
-
-    // Check /etc/noil/config.yml
-    let system_config = PathBuf::from("/etc/noil/config.yml");
-    if system_config.exists() {
-        return Some(system_config);
-    }
-
-    None
 }
