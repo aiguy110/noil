@@ -17,7 +17,7 @@ A fiber type is a template that defines:
 - **Keys**: Attributes marked with `key: true`; used for fiber matching/merging while open, released on close
 - **Source patterns**: Per-source regex patterns that filter logs and extract attributes
 
-Each fiber is identified by a UUID assigned at creation. Keys enable matching and merging: when a log's keys match an open fiber, it joins that fiber; when keys match multiple fibers, those fibers merge. Keys only exist while a fiber is open—when closed, keys are released but attributes persist.
+Each fiber is identified by a UUID assigned at creation. Keys enable matching and merging: when a log's keys match an open fiber, it joins that fiber; when keys match multiple open fibers of the same type, those fibers merge. Fibers of different types are never merged and are processed completely independently (enabling parallelization). Keys only exist while a fiber is open—when closed, keys are released but attributes persist.
 
 Note: `max_gap` may be `infinite` (never closes due to time). One use case: each source can have its own never-closing fiber that serves as a jumping-off point for navigation in the UI.
 

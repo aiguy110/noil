@@ -149,7 +149,7 @@ When a log arrives:
 
 ## Fiber Merging
 
-When a log matches multiple open fibers (via different keys), those fibers must be merged.
+When a log matches multiple open fibers of the same type (via different keys), those fibers must be merged. Fibers of different types are never merged—they are processed completely independently.
 
 ### Merge Process
 
@@ -410,4 +410,10 @@ When a fiber closes (timeout or explicit), all its keys are removed from the key
 
 ### Multiple Fiber Types
 
-A single log can match multiple fiber types. Each fiber type is evaluated independently — the log can belong to multiple fibers of different types simultaneously.
+A single log can match multiple fiber types. Each fiber type is processed completely independently:
+
+- Separate key indexes per fiber type
+- No merging across fiber types
+- A log can belong to multiple fibers of different types simultaneously
+
+This independence means fiber processing can be parallelized across fiber types with no synchronization required.
