@@ -95,6 +95,11 @@ impl SourceReader {
         Ok(reader)
     }
 
+    /// Get the source ID
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
     /// Open the file and seek to the appropriate position
     pub fn open(&mut self) -> Result<(), ReaderError> {
         let file = File::open(&self.path)?;
