@@ -1,5 +1,6 @@
 use crate::config::types::{ParseErrorStrategy, ReadConfig, ReadStart, SourceConfig};
 use crate::source::timestamp::{TimestampError, TimestampExtractor};
+use crate::storage::checkpoint::SharedSourceState;
 use chrono::{DateTime, Utc};
 use futures::Future;
 use std::fs::{File, Metadata};
@@ -54,6 +55,9 @@ pub struct SourceReader {
     last_emitted_offset: u64, // Offset after the last emitted record (for checkpointing)
     file_inode: Option<u64>,
     eof_reached: bool,
+
+    // Shared state for checkpointing
+    shared_state: Option<SharedSourceState>,
 }
 
 impl SourceReader {
@@ -79,6 +83,7 @@ impl SourceReader {
             last_emitted_offset: 0,
             file_inode: None,
             eof_reached: false,
+            shared_state: None,
         })
     }
 
@@ -159,6 +164,7 @@ impl SourceReader {
                     self.last_watermark = Some(record.timestamp);
                     // Update checkpoint offset to current position (EOF reached)
                     self.last_emitted_offset = self.current_offset;
+                    self.update_shared_state();
                     return Ok(Some(record));
                 }
 
@@ -218,6 +224,7 @@ impl SourceReader {
 
                         // Update checkpoint offset to point after this emitted record
                         self.last_emitted_offset = line_start_offset;
+                        self.update_shared_state();
 
                         // Buffer the new line
                         self.buffered_line = Some(BufferedLine {
@@ -312,6 +319,31 @@ impl SourceReader {
     /// Get the file path
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Attach shared state for checkpointing and return both the reader and the state
+    pub fn with_shared_state(mut self) -> (Self, SharedSourceState) {
+        use crate::storage::checkpoint::SourceCheckpointState;
+        use std::sync::{Arc, Mutex};
+
+        let state = Arc::new(Mutex::new(SourceCheckpointState {
+            offset: self.last_emitted_offset,
+            inode: self.file_inode.unwrap_or(0),
+            last_timestamp: self.last_watermark,
+        }));
+        self.shared_state = Some(state.clone());
+        (self, state)
+    }
+
+    /// Update the shared state with current checkpoint values
+    fn update_shared_state(&self) {
+        if let Some(ref state) = self.shared_state {
+            if let Ok(mut guard) = state.lock() {
+                guard.offset = self.last_emitted_offset;
+                guard.inode = self.file_inode.unwrap_or(0);
+                guard.last_timestamp = self.last_watermark;
+            }
+        }
     }
 
     /// Check if the file has been rotated (inode changed)

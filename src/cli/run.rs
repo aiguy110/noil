@@ -4,9 +4,11 @@ use crate::fiber::FiberProcessor;
 use crate::pipeline::{create_channel, run_processor, run_writer, FiberUpdate};
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
 use crate::source::reader::{LogRecord, SourceReader};
+use crate::storage::checkpoint::{Checkpoint, CheckpointManager, SequencerCheckpoint, SharedSourceState, SourceCheckpoint};
 use crate::storage::duckdb::DuckDbStorage;
 use crate::storage::traits::Storage;
 use crate::web::run_server;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -106,6 +108,8 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     // Create source readers (with checkpoint restoration if available)
     let mut readers = Vec::new();
+    let mut shared_states: HashMap<String, SharedSourceState> = HashMap::new();
+
     for (source_id, source_config) in &config.sources {
         info!(source_id = %source_id, path = %source_config.path.display(), "Creating source reader");
 
@@ -175,6 +179,9 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
             )?
         };
 
+        // Attach shared state for checkpointing
+        let (reader, state) = reader.with_shared_state();
+        shared_states.insert(source_id.clone(), state);
         readers.push(reader);
     }
 
@@ -201,10 +208,75 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     let (fiber_tx, fiber_rx) = create_channel::<FiberUpdate>(buffer_size);
 
     // Create shutdown signal
-    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Note: For periodic checkpoint saving, we would need to capture source state here
-    // This is deferred to a future iteration when we refactor to use shared state
+    // Start periodic checkpoint saving task if enabled
+    let checkpoint_handle = if config.pipeline.checkpoint.enabled {
+        let checkpoint_path = config.pipeline.checkpoint.path.clone();
+        let interval = config.pipeline.checkpoint.interval_seconds;
+        let states = shared_states.clone();
+        let source_configs = config.sources.clone();
+        let mut shutdown_watch = shutdown_rx.clone();
+
+        info!(
+            interval_seconds = interval,
+            path = %checkpoint_path.display(),
+            "Starting checkpoint task"
+        );
+
+        Some(tokio::spawn(async move {
+            let mut checkpoint_mgr = CheckpointManager::new(
+                &checkpoint_path,
+                std::time::Duration::from_secs(interval),
+            );
+            let mut interval_ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+
+            loop {
+                tokio::select! {
+                    _ = interval_ticker.tick() => {
+                        // Build checkpoint from current state
+                        let mut sources = HashMap::new();
+                        for (source_id, state) in &states {
+                            if let Ok(guard) = state.lock() {
+                                sources.insert(
+                                    source_id.clone(),
+                                    SourceCheckpoint {
+                                        path: source_configs[source_id].path.clone(),
+                                        offset: guard.offset,
+                                        inode: guard.inode,
+                                        last_timestamp: guard.last_timestamp,
+                                    },
+                                );
+                            }
+                        }
+
+                        let checkpoint = Checkpoint {
+                            version: 1,
+                            timestamp: chrono::Utc::now(),
+                            config_version,
+                            sources,
+                            sequencer: SequencerCheckpoint {
+                                watermarks: HashMap::new(),
+                            },
+                            fiber_processors: HashMap::new(),
+                        };
+
+                        if let Err(e) = checkpoint_mgr.save(&checkpoint) {
+                            error!(error = %e, "Failed to save checkpoint");
+                        } else {
+                            tracing::debug!("Checkpoint saved successfully");
+                        }
+                    }
+                    _ = shutdown_watch.changed() => {
+                        info!("Checkpoint task shutting down");
+                        break;
+                    }
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     // Start sequencer
     info!("Starting sequencer");
@@ -269,6 +341,14 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     // Wait for tasks to complete
     info!("Waiting for pipeline tasks to complete");
+
+    // Wait for checkpoint task
+    if let Some(handle) = checkpoint_handle {
+        match handle.await {
+            Ok(()) => info!("Checkpoint task completed successfully"),
+            Err(e) => error!(error = %e, "Checkpoint task join error"),
+        }
+    }
 
     // Wait for processor
     match processor_handle.await {

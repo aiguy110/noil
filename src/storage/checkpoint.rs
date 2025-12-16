@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -20,6 +21,18 @@ pub enum CheckpointError {
 }
 
 pub type Result<T> = std::result::Result<T, CheckpointError>;
+
+/// Runtime state for a source reader that can be safely shared across threads
+/// for checkpoint collection without blocking the reader
+#[derive(Debug, Default)]
+pub struct SourceCheckpointState {
+    pub offset: u64,
+    pub inode: u64,
+    pub last_timestamp: Option<DateTime<Utc>>,
+}
+
+/// Shared reference to source checkpoint state
+pub type SharedSourceState = Arc<Mutex<SourceCheckpointState>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
