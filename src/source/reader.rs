@@ -304,6 +304,16 @@ impl SourceReader {
         self.last_emitted_offset
     }
 
+    /// Get the file inode for checkpoint purposes
+    pub fn file_inode(&self) -> Option<u64> {
+        self.file_inode
+    }
+
+    /// Get the file path
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Check if the file has been rotated (inode changed)
     fn check_file_rotation(&self) -> Result<bool, ReaderError> {
         if let Some(original_inode) = self.file_inode {

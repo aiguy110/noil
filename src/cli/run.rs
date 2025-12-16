@@ -65,20 +65,112 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     // TODO: Implement proper config versioning
     let config_version = 1u64;
 
+    // Load checkpoint if enabled
+    let checkpoint = if config.pipeline.checkpoint.enabled {
+        use crate::storage::checkpoint::CheckpointManager;
+        let checkpoint_mgr = CheckpointManager::new(
+            &config.pipeline.checkpoint.path,
+            std::time::Duration::from_secs(config.pipeline.checkpoint.interval_seconds),
+        );
+        match checkpoint_mgr.load() {
+            Ok(Some(checkpoint)) => {
+                if checkpoint.config_version != config_version {
+                    warn!(
+                        "Checkpoint config version {} does not match current version {}, starting fresh",
+                        checkpoint.config_version, config_version
+                    );
+                    None
+                } else {
+                    info!("Loaded checkpoint from {}", checkpoint.timestamp);
+                    Some(checkpoint)
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Failed to load checkpoint: {}, starting fresh", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Initialize storage
     info!(path = %config.storage.path.display(), "Initializing storage");
     let storage = Arc::new(DuckDbStorage::new(&config.storage.path, config_version)?);
     storage.init_schema().await?;
 
-    // Create source readers
+    // Create source readers (with checkpoint restoration if available)
     let mut readers = Vec::new();
     for (source_id, source_config) in &config.sources {
         info!(source_id = %source_id, path = %source_config.path.display(), "Creating source reader");
-        let reader = SourceReader::new(
-            source_id.clone(),
-            source_config,
-            config.pipeline.errors.on_parse_error,
-        )?;
+
+        let reader = if let Some(ref checkpoint) = checkpoint {
+            if let Some(source_checkpoint) = checkpoint.sources.get(source_id) {
+                // Check if file inode matches (detect file rotation)
+                if let Ok(metadata) = std::fs::metadata(&source_config.path) {
+                    #[cfg(unix)]
+                    let current_inode = {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.ino()
+                    };
+                    #[cfg(not(unix))]
+                    let current_inode = {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        metadata.len().hash(&mut hasher);
+                        if let Ok(modified) = metadata.modified() {
+                            modified.hash(&mut hasher);
+                        }
+                        hasher.finish()
+                    };
+
+                    if current_inode == source_checkpoint.inode {
+                        info!(
+                            source_id = %source_id,
+                            offset = source_checkpoint.offset,
+                            "Restoring source reader from checkpoint"
+                        );
+                        SourceReader::new_with_offset(
+                            source_id.clone(),
+                            source_config,
+                            config.pipeline.errors.on_parse_error,
+                            source_checkpoint.offset,
+                        )?
+                    } else {
+                        warn!(
+                            source_id = %source_id,
+                            "File inode changed (rotation detected), starting from beginning"
+                        );
+                        SourceReader::new(
+                            source_id.clone(),
+                            source_config,
+                            config.pipeline.errors.on_parse_error,
+                        )?
+                    }
+                } else {
+                    warn!(source_id = %source_id, "Cannot read file metadata, starting from beginning");
+                    SourceReader::new(
+                        source_id.clone(),
+                        source_config,
+                        config.pipeline.errors.on_parse_error,
+                    )?
+                }
+            } else {
+                SourceReader::new(
+                    source_id.clone(),
+                    source_config,
+                    config.pipeline.errors.on_parse_error,
+                )?
+            }
+        } else {
+            SourceReader::new(
+                source_id.clone(),
+                source_config,
+                config.pipeline.errors.on_parse_error,
+            )?
+        };
+
         readers.push(reader);
     }
 
@@ -86,11 +178,16 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         warn!("No sources configured, pipeline will not process any logs");
     }
 
-    // Create fiber processor
+    // Create fiber processor (with checkpoint restoration if available)
     info!("Creating fiber processor");
-    let fiber_processor = FiberProcessor::from_config(&config, config_version)?;
+    let mut fiber_processor = FiberProcessor::from_config(&config, config_version)?;
+    if let Some(ref checkpoint) = checkpoint {
+        info!("Restoring fiber processor state from checkpoint");
+        fiber_processor.restore_from_checkpoint(&checkpoint.fiber_processors);
+    }
     info!(
         fiber_types = config.fiber_types.len(),
+        open_fibers = fiber_processor.total_open_fibers(),
         "Fiber processor initialized"
     );
 
@@ -101,6 +198,9 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     // Create shutdown signal
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+    // Note: For periodic checkpoint saving, we would need to capture source state here
+    // This is deferred to a future iteration when we refactor to use shared state
 
     // Start sequencer
     info!("Starting sequencer");

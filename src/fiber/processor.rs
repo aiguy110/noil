@@ -416,6 +416,103 @@ impl FiberTypeProcessor {
         }
         result
     }
+
+    /// Create a checkpoint of this fiber type processor's state
+    pub fn create_checkpoint(&self) -> crate::storage::checkpoint::FiberProcessorCheckpoint {
+        let open_fibers = self
+            .open_fibers
+            .values()
+            .map(|fiber| {
+                // Convert AttributeValue to serde_json::Value for checkpoint serialization
+                let attributes: HashMap<String, serde_json::Value> = fiber
+                    .attributes
+                    .iter()
+                    .map(|(k, v)| {
+                        let json_val = match v {
+                            AttributeValue::String(s) => serde_json::Value::String(s.clone()),
+                            AttributeValue::Int(i) => serde_json::Value::Number((*i).into()),
+                            AttributeValue::Float(f) => {
+                                serde_json::Number::from_f64(*f)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::Null)
+                            }
+                        };
+                        (k.clone(), json_val)
+                    })
+                    .collect();
+
+                crate::storage::checkpoint::OpenFiberCheckpoint {
+                    fiber_id: fiber.fiber_id,
+                    keys: fiber.keys.clone(),
+                    attributes,
+                    first_activity: fiber.first_activity,
+                    last_activity: fiber.last_activity,
+                    log_ids: fiber.log_ids.clone(),
+                }
+            })
+            .collect();
+
+        crate::storage::checkpoint::FiberProcessorCheckpoint {
+            open_fibers,
+            logical_clock: self.logical_clock.unwrap_or_else(|| Utc::now()),
+        }
+    }
+
+    /// Restore fiber type processor state from a checkpoint
+    pub fn restore_from_checkpoint(
+        &mut self,
+        checkpoint: &crate::storage::checkpoint::FiberProcessorCheckpoint,
+    ) {
+        // Clear existing state
+        self.open_fibers.clear();
+        self.key_index.clear();
+
+        // Restore logical clock
+        self.logical_clock = Some(checkpoint.logical_clock);
+
+        // Restore open fibers
+        for fiber_cp in &checkpoint.open_fibers {
+            // Convert serde_json::Value back to AttributeValue
+            let attributes: HashMap<String, AttributeValue> = fiber_cp
+                .attributes
+                .iter()
+                .filter_map(|(k, v)| {
+                    let attr_val = match v {
+                        serde_json::Value::String(s) => Some(AttributeValue::String(s.clone())),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                Some(AttributeValue::Int(i))
+                            } else if let Some(f) = n.as_f64() {
+                                Some(AttributeValue::Float(f))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    attr_val.map(|v| (k.clone(), v))
+                })
+                .collect();
+
+            let fiber = OpenFiber {
+                fiber_id: fiber_cp.fiber_id,
+                fiber_type: self.fiber_type.name.clone(),
+                keys: fiber_cp.keys.clone(),
+                attributes,
+                first_activity: fiber_cp.first_activity,
+                last_activity: fiber_cp.last_activity,
+                log_ids: fiber_cp.log_ids.clone(),
+            };
+
+            // Rebuild key index
+            for (key_name, value) in &fiber.keys {
+                self.key_index
+                    .insert((key_name.clone(), value.clone()), fiber.fiber_id);
+            }
+
+            self.open_fibers.insert(fiber.fiber_id, fiber);
+        }
+    }
 }
 
 /// Multi-type fiber processor that coordinates multiple FiberTypeProcessors
@@ -463,6 +560,33 @@ impl FiberProcessor {
     /// Flush all open fibers across all types
     pub fn flush(&mut self) -> Vec<ProcessResult> {
         self.processors.values_mut().map(|p| p.flush()).collect()
+    }
+
+    /// Create a checkpoint of all fiber type processors
+    pub fn create_checkpoint(
+        &self,
+    ) -> HashMap<String, crate::storage::checkpoint::FiberProcessorCheckpoint> {
+        self.processors
+            .iter()
+            .map(|(name, processor)| (name.clone(), processor.create_checkpoint()))
+            .collect()
+    }
+
+    /// Restore fiber processor state from a checkpoint
+    pub fn restore_from_checkpoint(
+        &mut self,
+        checkpoints: &HashMap<String, crate::storage::checkpoint::FiberProcessorCheckpoint>,
+    ) {
+        for (fiber_type, checkpoint) in checkpoints {
+            if let Some(processor) = self.processors.get_mut(fiber_type) {
+                processor.restore_from_checkpoint(checkpoint);
+            } else {
+                warn!(
+                    "Checkpoint contains fiber type '{}' not in current config, skipping",
+                    fiber_type
+                );
+            }
+        }
     }
 }
 

@@ -147,6 +147,27 @@ impl Sequencer {
         self.heap.len()
     }
 
+    /// Create a checkpoint of the sequencer state.
+    pub fn create_checkpoint(&self) -> crate::storage::checkpoint::SequencerCheckpoint {
+        crate::storage::checkpoint::SequencerCheckpoint {
+            watermarks: self
+                .sources
+                .iter()
+                .filter_map(|(id, state)| state.watermark.map(|w| (id.clone(), w)))
+                .collect(),
+        }
+    }
+
+    /// Restore sequencer state from a checkpoint.
+    pub fn restore_from_checkpoint(
+        &mut self,
+        checkpoint: &crate::storage::checkpoint::SequencerCheckpoint,
+    ) {
+        for (source_id, watermark) in &checkpoint.watermarks {
+            self.update_watermark(source_id, *watermark);
+        }
+    }
+
     /// Compute the minimum watermark across all active sources.
     ///
     /// Returns None if any active source has no watermark yet.
