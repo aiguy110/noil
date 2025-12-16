@@ -9,25 +9,22 @@ use uuid::Uuid;
 /// DuckDB implementation of the Storage trait
 pub struct DuckDbStorage {
     conn: Arc<Mutex<Connection>>,
-    config_version: u64,
 }
 
 impl DuckDbStorage {
     /// Create a new DuckDB storage instance
-    pub fn new<P: AsRef<Path>>(path: P, config_version: u64) -> Result<Self, StorageError> {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
         let conn = Connection::open(path)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            config_version,
         })
     }
 
     /// Create an in-memory DuckDB storage instance (for testing)
-    pub fn in_memory(config_version: u64) -> Result<Self, StorageError> {
+    pub fn in_memory() -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory()?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            config_version,
         })
     }
 }
@@ -534,14 +531,14 @@ mod tests {
     use chrono::Utc;
 
     async fn setup_storage() -> DuckDbStorage {
-        let storage = DuckDbStorage::in_memory(1).unwrap();
+        let storage = DuckDbStorage::in_memory().unwrap();
         storage.init_schema().await.unwrap();
         storage
     }
 
     #[tokio::test]
     async fn test_schema_initialization() {
-        let storage = DuckDbStorage::in_memory(1).unwrap();
+        let storage = DuckDbStorage::in_memory().unwrap();
         assert!(storage.init_schema().await.is_ok());
     }
 

@@ -63,10 +63,10 @@ pub async fn run_processor(
     mut processor: FiberProcessor,
     storage: Arc<dyn Storage>,
     config: &Config,
+    config_version: u64,
 ) -> Result<(), PipelineError> {
     let batch_size = config.storage.batch_size;
     let flush_interval_secs = config.storage.flush_interval_seconds;
-    let config_version = 1u64; // TODO: Get from config versioning system
 
     let mut log_batch: Vec<StoredLog> = Vec::with_capacity(batch_size);
     let mut flush_interval = tokio::time::interval(Duration::from_secs(flush_interval_secs));
@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_processor_writes_logs() {
         let config = make_test_config();
-        let storage = Arc::new(DuckDbStorage::in_memory(1).unwrap());
+        let storage = Arc::new(DuckDbStorage::in_memory().unwrap());
         storage.init_schema().await.unwrap();
 
         let processor = FiberProcessor::from_config(&config, 1).unwrap();
@@ -387,7 +387,7 @@ mod tests {
         let storage_clone = storage.clone();
         let config_clone = config.clone();
         let processor_handle = tokio::spawn(async move {
-            run_processor(input_rx, output_tx, processor, storage_clone, &config_clone).await
+            run_processor(input_rx, output_tx, processor, storage_clone, &config_clone, 1).await
         });
 
         // Send a log
@@ -418,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_writes_fibers_and_memberships() {
         let config = make_test_config();
-        let storage = Arc::new(DuckDbStorage::in_memory(1).unwrap());
+        let storage = Arc::new(DuckDbStorage::in_memory().unwrap());
         storage.init_schema().await.unwrap();
 
         let (input_tx, input_rx) = mpsc::channel(100);

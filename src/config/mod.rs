@@ -1,11 +1,13 @@
 pub mod generate;
 pub mod parse;
 pub mod types;
+pub mod version;
 
 use std::path::{Path, PathBuf};
 
 pub use parse::{load_config, ConfigError};
 pub use types::{Config, WebConfig};
+pub use version::compute_config_version;
 
 /// Resolves the config file path based on explicit argument or default locations.
 /// Returns the first existing path from:

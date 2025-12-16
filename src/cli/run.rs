@@ -1,4 +1,5 @@
 use crate::config::parse::load_config;
+use crate::config::compute_config_version;
 use crate::fiber::FiberProcessor;
 use crate::pipeline::{create_channel, run_processor, run_writer, FiberUpdate};
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
@@ -62,8 +63,11 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     // Load and validate config
     let config = load_config(config_path)?;
 
-    // TODO: Implement proper config versioning
-    let config_version = 1u64;
+    // Compute config version from content hash
+    let config_version = compute_config_version(config_path)
+        .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
+
+    info!(config_version = config_version, "Computed config version");
 
     // Load checkpoint if enabled
     let checkpoint = if config.pipeline.checkpoint.enabled {
@@ -97,7 +101,7 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     // Initialize storage
     info!(path = %config.storage.path.display(), "Initializing storage");
-    let storage = Arc::new(DuckDbStorage::new(&config.storage.path, config_version)?);
+    let storage = Arc::new(DuckDbStorage::new(&config.storage.path)?);
     storage.init_schema().await?;
 
     // Create source readers (with checkpoint restoration if available)
@@ -217,7 +221,7 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     let processor_storage = storage.clone();
     let processor_config = config.clone();
     let processor_handle = tokio::spawn(async move {
-        run_processor(seq_rx, fiber_tx, fiber_processor, processor_storage, &processor_config).await
+        run_processor(seq_rx, fiber_tx, fiber_processor, processor_storage, &processor_config, config_version).await
     });
 
     // Start storage writer task
