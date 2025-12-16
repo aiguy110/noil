@@ -1,15 +1,35 @@
-use std::net::SocketAddr;
+use axum::{routing::get, Router};
+use std::sync::Arc;
 
-pub struct WebServer {
-    // TODO: Define web server
-}
+use crate::config::WebConfig;
+use crate::storage::Storage;
 
-impl WebServer {
-    pub fn new(_listen_addr: SocketAddr) -> Self {
-        todo!("implement WebServer")
-    }
+use super::api::{
+    health_check, list_logs, get_log, get_log_fibers,
+    list_fibers, get_fiber, get_fiber_logs, AppState,
+};
 
-    pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("implement serve")
-    }
+/// Start the web server with the given storage backend and configuration
+pub async fn run_server(
+    storage: Arc<dyn Storage>,
+    config: WebConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app_state = AppState { storage };
+
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/api/logs", get(list_logs))
+        .route("/api/logs/:id", get(get_log))
+        .route("/api/logs/:id/fibers", get(get_log_fibers))
+        .route("/api/fibers", get(list_fibers))
+        .route("/api/fibers/:id", get(get_fiber))
+        .route("/api/fibers/:id/logs", get(get_fiber_logs))
+        .with_state(app_state);
+
+    let listener = tokio::net::TcpListener::bind(&config.listen).await?;
+    tracing::info!("Web server listening on {}", config.listen);
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }

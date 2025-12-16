@@ -5,7 +5,7 @@ pub mod types;
 use std::path::{Path, PathBuf};
 
 pub use parse::{load_config, ConfigError};
-pub use types::Config;
+pub use types::{Config, WebConfig};
 
 /// Resolves the config file path based on explicit argument or default locations.
 /// Returns the first existing path from:

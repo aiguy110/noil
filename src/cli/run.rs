@@ -5,6 +5,7 @@ use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
 use crate::source::reader::{LogRecord, SourceReader};
 use crate::storage::duckdb::DuckDbStorage;
 use crate::storage::traits::Storage;
+use crate::web::run_server;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -34,6 +35,9 @@ pub enum RunError {
 
     #[error("task join error: {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    #[error("web server error: {0}")]
+    WebServer(String),
 }
 
 pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
@@ -124,6 +128,16 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         run_writer(fiber_rx, writer_storage, &writer_config).await
     });
 
+    // Start web server task
+    info!("Starting web server on {}", config.web.listen);
+    let web_storage = storage.clone();
+    let web_config = config.web.clone();
+    let web_handle = tokio::spawn(async move {
+        run_server(web_storage, web_config)
+            .await
+            .map_err(|e| RunError::WebServer(e.to_string()))
+    });
+
     info!("Pipeline started, press Ctrl+C to shutdown");
 
     // Wait for shutdown signal or task completion
@@ -165,6 +179,10 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         Ok(Err(e)) => error!(error = %e, "Writer task error"),
         Err(e) => error!(error = %e, "Writer task join error"),
     }
+
+    // Note: web server doesn't gracefully shutdown yet, so we just abort it
+    web_handle.abort();
+    info!("Web server stopped");
 
     info!("Pipeline shutdown complete");
 
