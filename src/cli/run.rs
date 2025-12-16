@@ -308,8 +308,9 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     info!("Starting web server on {}", config.web.listen);
     let web_storage = storage.clone();
     let web_config = config.web.clone();
+    let web_shutdown_rx = shutdown_rx.clone();
     let web_handle = tokio::spawn(async move {
-        run_server(web_storage, web_config)
+        run_server(web_storage, web_config, web_shutdown_rx)
             .await
             .map_err(|e| RunError::WebServer(e.to_string()))
     });
@@ -364,9 +365,16 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         Err(e) => error!(error = %e, "Writer task join error"),
     }
 
-    // Note: web server doesn't gracefully shutdown yet, so we just abort it
-    web_handle.abort();
-    info!("Web server stopped");
+    // Wait for web server with graceful shutdown timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), web_handle).await {
+        Ok(Ok(Ok(()))) => info!("Web server stopped gracefully"),
+        Ok(Ok(Err(e))) => error!(error = %e, "Web server error"),
+        Ok(Err(e)) => error!(error = %e, "Web server join error"),
+        Err(_) => {
+            warn!("Web server shutdown timed out after 5 seconds");
+            // Handle was consumed by timeout, task will be dropped
+        }
+    }
 
     info!("Pipeline shutdown complete");
 

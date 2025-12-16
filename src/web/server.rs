@@ -1,5 +1,6 @@
 use axum::{routing::get, Router};
 use std::sync::Arc;
+use tokio::sync::watch;
 
 use crate::config::WebConfig;
 use crate::storage::Storage;
@@ -13,6 +14,7 @@ use super::api::{
 pub async fn run_server(
     storage: Arc<dyn Storage>,
     config: WebConfig,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_state = AppState { storage };
 
@@ -29,7 +31,12 @@ pub async fn run_server(
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     tracing::info!("Web server listening on {}", config.listen);
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.wait_for(|&v| v).await;
+            tracing::info!("Web server shutting down gracefully");
+        })
+        .await?;
 
     Ok(())
 }
