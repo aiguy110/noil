@@ -1,0 +1,24 @@
+2025-01-11 10:00:00.000 [INFO] Service starting up
+2025-01-11 10:00:00.100 [INFO] Configuration loaded
+2025-01-11 10:00:00.200 [INFO] Database connected
+2025-01-11 10:00:00.300 [INFO] Listening on port 8080
+2025-01-11 10:00:00.400 [INFO] Service ready
+2025-01-11 10:00:00.500 [INFO] REQUEST START
+2025-01-11 10:00:00.510 [DEBUG] Parsing incoming request
+2025-01-11 10:00:00.520 [DEBUG] Validating request headers
+2025-01-11 10:00:00.530 [INFO] Executing query: SELECT * FROM devices WHERE active=true
+2025-01-11 10:00:00.540 [DEBUG] Query returned 42 rows
+2025-01-11 10:00:00.550 [INFO] Serializing response
+2025-01-11 10:00:00.560 [INFO] END OF REQUEST
+2025-01-11 10:00:01.000 [INFO] REQUEST START
+2025-01-11 10:00:01.010 [DEBUG] Parsing incoming request
+2025-01-11 10:00:01.020 [DEBUG] Validating request headers
+2025-01-11 10:00:01.030 [INFO] Executing query: INSERT INTO audit_log VALUES (...)
+2025-01-11 10:00:01.040 [DEBUG] Insert successful, 1 row affected
+2025-01-11 10:00:01.050 [INFO] Serializing response
+2025-01-11 10:00:01.060 [INFO] END OF REQUEST
+2025-01-11 10:00:03.000 [INFO] Health check ping received
+2025-01-11 10:00:05.000 [INFO] REQUEST START
+2025-01-11 10:00:05.010 [DEBUG] Parsing incoming request
+2025-01-11 10:00:05.020 [WARN] Invalid request format, rejecting
+2025-01-11 10:00:05.030 [INFO] END OF REQUEST

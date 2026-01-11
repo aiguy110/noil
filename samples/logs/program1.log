@@ -1,0 +1,24 @@
+[2025-01-11T10:00:00.100Z] INFO program1 thread-1 Starting request handler
+[2025-01-11T10:00:00.250Z] INFO program1 thread-1 Received connection from 192.168.1.100:45678
+[2025-01-11T10:00:00.500Z] INFO program1 thread-2 Starting request handler
+[2025-01-11T10:00:00.600Z] DEBUG program1 thread-1 Authenticating client MAC aa:bb:cc:11:22:33
+[2025-01-11T10:00:00.650Z] INFO program1 thread-2 Received connection from 192.168.1.101:45679
+[2025-01-11T10:00:00.800Z] DEBUG program1 thread-1 Validated MAC aa:bb:cc:11:22:33
+[2025-01-11T10:00:00.900Z] DEBUG program1 thread-2 Authenticating client MAC dd:ee:ff:44:55:66
+[2025-01-11T10:00:01.100Z] INFO program1 thread-1 Forwarding to backend server 10.0.0.5:8080
+[2025-01-11T10:00:01.200Z] DEBUG program1 thread-2 Validated MAC dd:ee:ff:44:55:66
+[2025-01-11T10:00:01.500Z] INFO program1 thread-2 Forwarding to backend server 10.0.0.5:8080
+[2025-01-11T10:00:02.100Z] DEBUG program1 thread-1 Received response from backend
+[2025-01-11T10:00:02.400Z] DEBUG program1 thread-2 Received response from backend
+[2025-01-11T10:00:02.500Z] INFO program1 thread-1 Sent response to client
+[2025-01-11T10:00:02.800Z] INFO program1 thread-2 Sent response to client
+[2025-01-11T10:00:03.000Z] INFO program1 thread-1 Connection closed
+[2025-01-11T10:00:03.200Z] INFO program1 thread-2 Connection closed
+[2025-01-11T10:00:05.000Z] INFO program1 thread-1 Starting request handler
+[2025-01-11T10:00:05.100Z] INFO program1 thread-1 Received connection from 192.168.1.102:45680
+[2025-01-11T10:00:05.300Z] DEBUG program1 thread-1 Authenticating client MAC 11:22:33:aa:bb:cc
+[2025-01-11T10:00:05.500Z] DEBUG program1 thread-1 Validated MAC 11:22:33:aa:bb:cc
+[2025-01-11T10:00:05.700Z] INFO program1 thread-1 Forwarding to backend server 10.0.0.5:8080
+[2025-01-11T10:00:06.200Z] DEBUG program1 thread-1 Received response from backend
+[2025-01-11T10:00:06.400Z] INFO program1 thread-1 Sent response to client
+[2025-01-11T10:00:06.600Z] INFO program1 thread-1 Connection closed

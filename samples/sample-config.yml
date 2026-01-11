@@ -1,0 +1,248 @@
+# =============================================================================
+# NOIL SAMPLE CONFIGURATION
+# =============================================================================
+# This configuration demonstrates all major features of Noil using sample logs
+# in the samples/logs/ directory.
+#
+# To run with this config:
+#   cargo run -- --config samples/sample-config.yml
+#
+# Expected behavior:
+# - 3 request_trace fibers will be created (one per request across program1/2)
+# - Multiple simple_log fibers (grouped by REQUEST START...END OF REQUEST)
+# - 1 nginx_all fiber containing all nginx logs
+# - Logs will be correlated via MAC addresses, thread IDs, and IP addresses
+
+# =============================================================================
+# SOURCES
+# =============================================================================
+
+sources:
+  # Program 1: Frontend proxy that receives client connections
+  program1:
+    type: file
+    path: samples/logs/program1.log
+    timestamp:
+      # ISO 8601 format: [2025-01-11T10:00:00.100Z]
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: iso8601
+    read:
+      start: beginning
+      follow: false  # Static sample file
+
+  # Program 2: Backend service that processes requests
+  program2:
+    type: file
+    path: samples/logs/program2.log
+    timestamp:
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: iso8601
+    read:
+      start: beginning
+      follow: false
+
+  # Nginx access log
+  nginx_access:
+    type: file
+    path: samples/logs/nginx_access.log
+    timestamp:
+      # Common Log Format: [11/Jan/2025:10:00:00 +0000]
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: '%d/%b/%Y:%H:%M:%S %z'
+    read:
+      start: beginning
+      follow: false
+
+  # Simple single-threaded service
+  simple_service:
+    type: file
+    path: samples/logs/simple_service.log
+    timestamp:
+      # Format: 2025-01-11 10:00:00.000
+      pattern: '^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})'
+      format: '%Y-%m-%d %H:%M:%S%.3f'
+    read:
+      start: beginning
+      follow: false
+
+# =============================================================================
+# FIBER TYPES
+# =============================================================================
+
+fiber_types:
+  # Correlates requests across program1 (frontend) and program2 (backend)
+  # Demonstrates:
+  #   - Key-based matching via MAC address and thread IDs
+  #   - Derived attributes (connection strings)
+  #   - release_matching_peer_keys for thread reuse
+  #   - release_self_keys and close actions
+  request_trace:
+    description: "Traces requests across frontend proxy and backend service"
+    temporal:
+      max_gap: 5s
+      gap_mode: session  # Gap measured between consecutive logs
+
+    attributes:
+      # MAC address - primary correlation key across both programs
+      - name: mac
+        type: mac
+        key: true
+
+      # Thread IDs - used while request is in flight, released after
+      - name: program1_thread
+        type: string
+        key: true
+
+      - name: program2_thread
+        type: string
+        key: true
+
+      # Client IP and ports - captured but not used for matching
+      - name: client_ip
+        type: ip
+
+      - name: client_port
+        type: int
+
+      # Backend server details
+      - name: backend_ip
+        type: ip
+
+      - name: backend_port
+        type: int
+
+      # Derived attribute - connection identifier
+      # Only defined when both client_ip and client_port are extracted
+      - name: client_connection
+        type: string
+        derived: "${client_ip}:${client_port}"
+
+      # Derived attribute - backend connection
+      - name: backend_connection
+        type: string
+        derived: "${backend_ip}:${backend_port}"
+
+    sources:
+      program1:
+        patterns:
+          # When a thread receives a new connection, release that thread from
+          # other fibers first (prevents merging new request with old one)
+          - regex: 'thread-(?P<program1_thread>\d+) Received connection from (?P<client_ip>\d+\.\d+\.\d+\.\d+):(?P<client_port>\d+)'
+            release_matching_peer_keys: [program1_thread]
+
+          # Extract MAC address and thread
+          - regex: 'thread-(?P<program1_thread>\d+).*MAC (?P<mac>[0-9a-fA-F:]+)'
+
+          # Extract backend server info
+          - regex: 'thread-(?P<program1_thread>\d+) Forwarding to backend server (?P<backend_ip>\d+\.\d+\.\d+\.\d+):(?P<backend_port>\d+)'
+
+          # Generic thread matcher (catches all other program1 thread logs)
+          - regex: 'thread-(?P<program1_thread>\d+)'
+
+      program2:
+        patterns:
+          # Extract MAC address and thread
+          - regex: 'thread-(?P<program2_thread>\d+).*MAC (?P<mac>[0-9a-fA-F:]+)'
+
+          # Request completion - release thread and close fiber
+          # This allows the thread to be reused for new requests
+          # and signals the end of this request trace
+          - regex: 'thread-(?P<program2_thread>\d+) Request complete'
+            release_self_keys: [program2_thread]
+            close: true
+
+          # Generic thread matcher
+          - regex: 'thread-(?P<program2_thread>\d+)'
+
+  # Groups consecutive log lines from the simple service
+  # Demonstrates:
+  #   - Session windowing with short gap (1s)
+  #   - Static derived attribute for grouping
+  #   - Explicit close action on pattern match
+  simple_log:
+    description: "Groups request sessions from single-threaded service"
+    temporal:
+      max_gap: 1s
+      gap_mode: session
+
+    attributes:
+      # Static derived attribute (no ${} references means always defined)
+      # This ensures all logs from this source join a fiber
+      - name: source_marker
+        type: string
+        key: true
+        derived: "simple_service"
+
+    sources:
+      simple_service:
+        patterns:
+          # Close fiber when request ends
+          - regex: 'END OF REQUEST'
+            close: true
+
+          # Match any line (ensures all logs are included)
+          - regex: '.+'
+
+  # Collects all nginx logs in a single never-closing fiber
+  # Demonstrates:
+  #   - Infinite max_gap (fiber never times out)
+  #   - Simple catch-all pattern
+  nginx_all:
+    description: "All nginx access logs as one continuous fiber"
+    temporal:
+      max_gap: infinite
+
+    attributes:
+      - name: source_marker
+        type: string
+        key: true
+        derived: "nginx"
+
+    sources:
+      nginx_access:
+        patterns:
+          - regex: '.+'
+
+# =============================================================================
+# PIPELINE SETTINGS
+# =============================================================================
+
+pipeline:
+  backpressure:
+    strategy: block  # Block source readers if downstream is slow
+    buffer_limit: 10000
+
+  errors:
+    on_parse_error: drop  # Skip unparseable lines for demo
+
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+    # Use /tmp for samples (or disable checkpointing)
+    path: /tmp/noil-sample-checkpoint.json
+
+# =============================================================================
+# SEQUENCER SETTINGS
+# =============================================================================
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+# =============================================================================
+# STORAGE SETTINGS
+# =============================================================================
+
+storage:
+  # Use /tmp for sample database
+  path: /tmp/noil-sample.duckdb
+  batch_size: 100  # Small batches for quick demo feedback
+  flush_interval_seconds: 2
+
+# =============================================================================
+# WEB SERVER SETTINGS
+# =============================================================================
+
+web:
+  listen: 127.0.0.1:8080
+  # After starting, visit http://localhost:8080 to view the UI

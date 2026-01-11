@@ -1,0 +1,18 @@
+[2025-01-11T10:00:01.000Z] INFO program2 thread-5 Backend handler started
+[2025-01-11T10:00:01.150Z] INFO program2 thread-5 Processing request for MAC aa:bb:cc:11:22:33
+[2025-01-11T10:00:01.400Z] DEBUG program2 thread-5 Querying database for device aa:bb:cc:11:22:33
+[2025-01-11T10:00:01.600Z] INFO program2 thread-6 Backend handler started
+[2025-01-11T10:00:01.650Z] INFO program2 thread-6 Processing request for MAC dd:ee:ff:44:55:66
+[2025-01-11T10:00:01.800Z] DEBUG program2 thread-5 Database returned 3 records
+[2025-01-11T10:00:01.900Z] DEBUG program2 thread-6 Querying database for device dd:ee:ff:44:55:66
+[2025-01-11T10:00:02.000Z] INFO program2 thread-5 Generating response payload
+[2025-01-11T10:00:02.200Z] DEBUG program2 thread-6 Database returned 1 records
+[2025-01-11T10:00:02.300Z] INFO program2 thread-5 Request complete
+[2025-01-11T10:00:02.600Z] INFO program2 thread-6 Generating response payload
+[2025-01-11T10:00:02.900Z] INFO program2 thread-6 Request complete
+[2025-01-11T10:00:05.800Z] INFO program2 thread-7 Backend handler started
+[2025-01-11T10:00:05.900Z] INFO program2 thread-7 Processing request for MAC 11:22:33:aa:bb:cc
+[2025-01-11T10:00:06.100Z] DEBUG program2 thread-7 Querying database for device 11:22:33:aa:bb:cc
+[2025-01-11T10:00:06.300Z] DEBUG program2 thread-7 Database returned 0 records
+[2025-01-11T10:00:06.350Z] WARN program2 thread-7 Device not found, returning empty response
+[2025-01-11T10:00:06.500Z] INFO program2 thread-7 Request complete
