@@ -219,7 +219,7 @@ pipeline:
     enabled: true
     interval_seconds: 30
     # Use /tmp for samples (or disable checkpointing)
-    path: /tmp/noil-sample-checkpoint.json
+    path: ~/.tmp/noil-sample-checkpoint.json
 
 # =============================================================================
 # SEQUENCER SETTINGS
@@ -235,7 +235,7 @@ sequencer:
 
 storage:
   # Use /tmp for sample database
-  path: /tmp/noil-sample.duckdb
+  path: ~/.tmp/noil-sample.duckdb
   batch_size: 100  # Small batches for quick demo feedback
   flush_interval_seconds: 2
 

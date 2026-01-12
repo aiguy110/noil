@@ -169,7 +169,7 @@ pub async fn run_sequencer(
     });
 
     Ok(SequencerHandle {
-        sequencer_task: sequencer_handle,
+        sequencer_task: Some(sequencer_handle),
         source_tasks: source_handles,
     })
 }
@@ -187,27 +187,31 @@ enum SourceEvent {
 
 /// Handle to the running sequencer
 pub struct SequencerHandle {
-    sequencer_task: JoinHandle<Result<(), SequencerError>>,
+    sequencer_task: Option<JoinHandle<Result<(), SequencerError>>>,
     source_tasks: Vec<JoinHandle<()>>,
 }
 
 impl SequencerHandle {
     /// Wait for the sequencer to complete
-    pub async fn wait(self) -> Result<(), SequencerError> {
+    pub async fn wait(&mut self) -> Result<(), SequencerError> {
         // Wait for main sequencer task
-        let result = self.sequencer_task.await??;
+        if let Some(task) = self.sequencer_task.take() {
+            task.await??;
+        }
 
         // Wait for all source tasks to complete
-        for task in self.source_tasks {
+        for task in self.source_tasks.drain(..) {
             task.await?;
         }
 
-        Ok(result)
+        Ok(())
     }
 
     /// Abort the sequencer and all source tasks
     pub fn abort(&self) {
-        self.sequencer_task.abort();
+        if let Some(ref task) = self.sequencer_task {
+            task.abort();
+        }
         for task in &self.source_tasks {
             task.abort();
         }
@@ -302,7 +306,7 @@ mod tests {
             emit_interval: Duration::from_millis(10),
         };
 
-        let handle = run_sequencer(vec![reader], output_tx, run_config)
+        let mut handle = run_sequencer(vec![reader], output_tx, run_config)
             .await
             .unwrap();
 
@@ -359,7 +363,7 @@ mod tests {
             emit_interval: Duration::from_millis(10),
         };
 
-        let handle = run_sequencer(vec![reader1, reader2], output_tx, run_config)
+        let mut handle = run_sequencer(vec![reader1, reader2], output_tx, run_config)
             .await
             .unwrap();
 
@@ -401,7 +405,7 @@ mod tests {
             emit_interval: Duration::from_millis(10),
         };
 
-        let handle = run_sequencer(vec![reader], output_tx, run_config)
+        let mut handle = run_sequencer(vec![reader], output_tx, run_config)
             .await
             .unwrap();
 
@@ -464,7 +468,7 @@ mod tests {
             emit_interval: Duration::from_millis(10),
         };
 
-        let handle = run_sequencer(vec![reader1, reader2, reader3], output_tx, run_config)
+        let mut handle = run_sequencer(vec![reader1, reader2, reader3], output_tx, run_config)
             .await
             .unwrap();
 

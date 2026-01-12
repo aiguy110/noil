@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::signal;
-use tokio::sync::watch;
+use tokio::sync::{watch, oneshot};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Error)]
@@ -317,26 +317,63 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     info!("Pipeline started, press Ctrl+C to shutdown");
 
-    // Wait for shutdown signal or task completion
+    // Create channel to signal abort to sequencer wait task
+    let (abort_tx, abort_rx) = oneshot::channel::<()>();
+
+    // Spawn task to wait for sequencer completion or abort signal
+    let sequencer_wait_task = if let Some(mut handle) = sequencer_handle {
+        Some(tokio::spawn(async move {
+            tokio::select! {
+                result = handle.wait() => {
+                    // Sequencer completed naturally
+                    Ok(result)
+                }
+                _ = abort_rx => {
+                    // Abort signal received
+                    info!("Aborting sequencer and source readers");
+                    handle.abort();
+                    Err(()) // Aborted
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Wait for shutdown signal or sequencer completion
     tokio::select! {
         _ = signal::ctrl_c() => {
             info!("Shutdown signal received");
             let _ = shutdown_tx.send(true);
+
+            // Signal the sequencer wait task to abort
+            let _ = abort_tx.send(());
         }
         result = async {
-            if let Some(handle) = sequencer_handle {
-                handle.wait().await
+            if let Some(task) = sequencer_wait_task {
+                task.await
             } else {
-                Ok(())
+                // No sequencer to wait for, sleep forever
+                std::future::pending::<Result<Result<Result<(), crate::sequencer::merge::SequencerError>, ()>, tokio::task::JoinError>>().await
             }
         } => {
             match result {
-                Ok(()) => info!("Sequencer completed"),
-                Err(e) => error!(error = %e, "Sequencer error"),
+                Ok(Ok(Ok(()))) => {
+                    info!("Sequencer completed naturally");
+                    let _ = shutdown_tx.send(true);
+                }
+                Ok(Ok(Err(e))) => {
+                    error!(error = %e, "Sequencer error");
+                    let _ = shutdown_tx.send(true);
+                }
+                Ok(Err(())) => {
+                    // Sequencer was aborted
+                }
+                Err(e) => {
+                    error!(error = %e, "Sequencer task join error");
+                    let _ = shutdown_tx.send(true);
+                }
             }
-        }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)) => {
-            // This won't complete normally, just keeps select! alive
         }
     }
 

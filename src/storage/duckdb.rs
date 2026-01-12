@@ -2,9 +2,61 @@ use super::traits::{FiberMembership, FiberRecord, Storage, StorageError, StoredL
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// Check if a process with the given PID is still running
+fn is_process_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix systems, assume process is running to be safe
+        true
+    }
+}
+
+/// Extract PID from DuckDB lock error message
+fn extract_pid_from_lock_error(error_msg: &str) -> Option<u32> {
+    // Error format: "... (PID 12345) ..."
+    if let Some(start) = error_msg.find("(PID ") {
+        let start = start + 5; // Length of "(PID "
+        if let Some(end) = error_msg[start..].find(')') {
+            let pid_str = &error_msg[start..start + end];
+            return pid_str.parse().ok();
+        }
+    }
+    None
+}
+
+/// Remove DuckDB lock files (WAL and lock files)
+fn remove_lock_files(db_path: &Path) -> std::io::Result<()> {
+    let wal_path = PathBuf::from(format!("{}.wal", db_path.display()));
+    let lock_path = PathBuf::from(format!("{}.lock", db_path.display()));
+
+    // Try to remove WAL file
+    if wal_path.exists() {
+        std::fs::remove_file(&wal_path)?;
+        tracing::info!("Removed stale WAL file: {}", wal_path.display());
+    }
+
+    // Try to remove lock file if it exists
+    if lock_path.exists() {
+        std::fs::remove_file(&lock_path)?;
+        tracing::info!("Removed stale lock file: {}", lock_path.display());
+    }
+
+    Ok(())
+}
 
 /// DuckDB implementation of the Storage trait
 pub struct DuckDbStorage {
@@ -14,10 +66,51 @@ pub struct DuckDbStorage {
 impl DuckDbStorage {
     /// Create a new DuckDB storage instance
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
-        let conn = Connection::open(path)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        let path = path.as_ref();
+
+        // First attempt to open the connection
+        match Connection::open(path) {
+            Ok(conn) => {
+                return Ok(Self {
+                    conn: Arc::new(Mutex::new(conn)),
+                });
+            }
+            Err(e) => {
+                // Check if this is a lock error
+                let error_msg = e.to_string();
+
+                if error_msg.contains("Could not set lock") {
+                    tracing::warn!("Database lock detected: {}", error_msg);
+
+                    // Try to extract the PID from the error message
+                    if let Some(pid) = extract_pid_from_lock_error(&error_msg) {
+                        tracing::info!("Lock is held by PID {}, checking if process is running", pid);
+
+                        if !is_process_running(pid) {
+                            tracing::warn!("Process {} is not running, removing stale lock files", pid);
+
+                            // Remove stale lock files
+                            if let Err(io_err) = remove_lock_files(path) {
+                                tracing::error!("Failed to remove lock files: {}", io_err);
+                                return Err(e.into());
+                            }
+
+                            // Retry opening the connection
+                            tracing::info!("Retrying database connection after removing stale locks");
+                            let conn = Connection::open(path)?;
+                            return Ok(Self {
+                                conn: Arc::new(Mutex::new(conn)),
+                            });
+                        } else {
+                            tracing::error!("Process {} is still running, cannot acquire lock", pid);
+                        }
+                    }
+                }
+
+                // If we couldn't handle the error, return it
+                Err(e.into())
+            }
+        }
     }
 
     /// Create an in-memory DuckDB storage instance (for testing)
@@ -899,5 +992,33 @@ mod tests {
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].raw_text, "log 2");
         assert_eq!(page2[1].raw_text, "log 3");
+    }
+
+    #[test]
+    fn test_extract_pid_from_lock_error() {
+        let error_msg = "IO Error: Could not set lock on file \"/path/to/db.duckdb\": Conflicting lock is held in /path/to/binary (deleted) (PID 12345). See also https://duckdb.org/docs/stable/connect/concurrency";
+        assert_eq!(extract_pid_from_lock_error(error_msg), Some(12345));
+
+        // Test with no PID
+        let error_msg_no_pid = "Some other error";
+        assert_eq!(extract_pid_from_lock_error(error_msg_no_pid), None);
+
+        // Test with malformed PID
+        let error_msg_malformed = "Error (PID abc)";
+        assert_eq!(extract_pid_from_lock_error(error_msg_malformed), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_process_running() {
+        use std::process;
+
+        // Test with current process (should be running)
+        let current_pid = process::id();
+        assert!(is_process_running(current_pid));
+
+        // Test with a PID that definitely doesn't exist
+        // Using a very high PID number that's unlikely to exist
+        assert!(!is_process_running(999999));
     }
 }
