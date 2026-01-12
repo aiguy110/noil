@@ -1,4 +1,5 @@
 use super::types::*;
+use crate::config::expand_tilde;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -25,7 +26,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
         ))
     })?;
 
-    let config: Config = serde_yaml::from_reader(file).map_err(|e| {
+    let mut config: Config = serde_yaml::from_reader(file).map_err(|e| {
         // Wrap error with file context
         ConfigError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -33,9 +34,26 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
         ))
     })?;
 
+    // Expand tilde in all paths
+    expand_paths(&mut config);
+
     validate_config(&config)?;
 
     Ok(config)
+}
+
+/// Expands tilde (~) in all PathBuf fields in the config.
+fn expand_paths(config: &mut Config) {
+    // Expand source paths
+    for source in config.sources.values_mut() {
+        source.path = expand_tilde(&source.path);
+    }
+
+    // Expand checkpoint path
+    config.pipeline.checkpoint.path = expand_tilde(&config.pipeline.checkpoint.path);
+
+    // Expand storage path
+    config.storage.path = expand_tilde(&config.storage.path);
 }
 
 fn validate_config(config: &Config) -> Result<(), ConfigError> {

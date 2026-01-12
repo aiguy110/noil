@@ -647,3 +647,94 @@ web:
     assert!(conn_attr.key);
     assert_eq!(conn_attr.derived, Some("${ip}:${port}".to_string()));
 }
+
+#[test]
+fn test_tilde_expansion_in_paths() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: ~/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      test_source:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+    path: ~/checkpoint.json
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: ~/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:8080
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Verify that paths were expanded
+    if let Some(home) = dirs::home_dir() {
+        let expected_source_path = home.join("test.log");
+        let expected_checkpoint_path = home.join("checkpoint.json");
+        let expected_storage_path = home.join("test.duckdb");
+
+        assert_eq!(
+            config.sources["test_source"].path,
+            expected_source_path,
+            "Source path should have tilde expanded"
+        );
+        assert_eq!(
+            config.pipeline.checkpoint.path, expected_checkpoint_path,
+            "Checkpoint path should have tilde expanded"
+        );
+        assert_eq!(
+            config.storage.path, expected_storage_path,
+            "Storage path should have tilde expanded"
+        );
+
+        // Also verify they don't still contain tilde
+        assert!(!config.sources["test_source"]
+            .path
+            .to_string_lossy()
+            .starts_with('~'));
+        assert!(!config
+            .pipeline
+            .checkpoint
+            .path
+            .to_string_lossy()
+            .starts_with('~'));
+        assert!(!config.storage.path.to_string_lossy().starts_with('~'));
+    }
+}

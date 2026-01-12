@@ -468,6 +468,29 @@ First iteration does not support hot reload, but design should not preclude it:
 - Network errors in distributed mode: retry with backoff, wait forever for first pass
 - Storage write errors: retry with backoff, block pipeline on persistent failure
 
+### Development Environment: Termux
+
+When developing in a Termux environment, be aware of the following when using shell commands:
+
+**Avoid complex I/O redirection**: Commands with stderr redirection and piping (e.g., `2>&1 | head`) may fail with permission errors due to task directory creation issues in Termux's restricted filesystem.
+
+**Prefer built-in flags over pipes**: Instead of:
+- `cargo build 2>&1 | head -20` ❌
+- `cargo test 2>&1` ❌
+
+Use:
+- `cargo build --quiet` ✓
+- `cargo test` ✓
+- `cargo check` ✓
+
+**If output truncation is needed**: Use tool-specific flags (like `--quiet`) or accept full output rather than piping to `head` or `tail`.
+
+**Path handling**: All path parameters in the config file support tilde expansion (`~` expands to the home directory). This applies to:
+- Source file paths
+- Checkpoint path
+- Storage database path
+- `--config` CLI argument
+
 ### Checkpointing
 
 Checkpoint state includes:
