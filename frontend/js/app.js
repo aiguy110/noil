@@ -1,0 +1,285 @@
+/**
+ * Main application controller
+ */
+class NoilApp {
+    constructor() {
+        this.timeline = null;
+        this.logViewer = null;
+        this.filters = {
+            showClosed: true,
+            fiberTypes: [],
+            timeRange: '24h',
+        };
+        this.allFibers = [];
+        this.filteredFibers = [];
+
+        this.init();
+    }
+
+    async init() {
+        // Initialize components
+        this.initDrawer();
+        this.initTabs();
+        this.initTimeline();
+        this.initLogViewer();
+        this.initColorConfig();
+        this.initFilters();
+
+        // Load initial data
+        await this.loadData();
+
+        // Set up periodic refresh
+        setInterval(() => this.refresh(), 30000); // Refresh every 30 seconds
+    }
+
+    initDrawer() {
+        const drawer = document.getElementById('drawer');
+        const toggleBtn = document.getElementById('drawer-toggle');
+
+        toggleBtn.addEventListener('click', () => {
+            drawer.classList.toggle('collapsed');
+        });
+    }
+
+    initTabs() {
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        tabButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tabName = btn.dataset.tab;
+
+                // Update active tab button
+                tabButtons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // Update active tab content
+                tabContents.forEach(content => {
+                    if (content.id === `tab-${tabName}`) {
+                        content.classList.add('active');
+                    } else {
+                        content.classList.remove('active');
+                    }
+                });
+            });
+        });
+    }
+
+    initTimeline() {
+        const container = document.getElementById('timeline-canvas');
+        this.timeline = new Timeline(container, (fiberId) => {
+            this.onFiberSelected(fiberId);
+        });
+
+        // Zoom controls
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            this.timeline.zoomIn();
+        });
+
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            this.timeline.zoomOut();
+        });
+
+        document.getElementById('refresh').addEventListener('click', () => {
+            this.refresh();
+        });
+    }
+
+    initLogViewer() {
+        const container = document.getElementById('log-content');
+        const titleEl = document.getElementById('log-viewer-title');
+        const infoEl = document.getElementById('fiber-info');
+
+        this.logViewer = new LogViewer(container, titleEl, infoEl);
+
+        // Load more button
+        document.getElementById('load-more-logs').addEventListener('click', () => {
+            this.logViewer.loadMore();
+        });
+    }
+
+    async initColorConfig() {
+        // Populate fiber type colors
+        const fiberTypeContainer = document.getElementById('fiber-type-colors');
+        const sourceContainer = document.getElementById('source-colors');
+
+        // Get all fiber types and sources
+        const fiberTypes = await api.getAllFiberTypes();
+        const sources = await api.getAllSources();
+
+        // Create color pickers for fiber types
+        fiberTypes.forEach(type => {
+            const item = this.createColorItem(
+                type,
+                colorManager.getFiberTypeColor(type),
+                (color) => {
+                    colorManager.setFiberTypeColor(type, color);
+                    this.timeline.render();
+                }
+            );
+            fiberTypeContainer.appendChild(item);
+        });
+
+        // Create color pickers for sources
+        sources.forEach(source => {
+            const item = this.createColorItem(
+                source,
+                colorManager.getSourceColor(source),
+                (color) => {
+                    colorManager.setSourceColor(source, color);
+                    this.logViewer.render();
+                }
+            );
+            sourceContainer.appendChild(item);
+        });
+
+        // Reset colors button
+        document.getElementById('reset-colors').addEventListener('click', () => {
+            colorManager.resetToDefaults();
+            this.initColorConfig();
+            this.timeline.render();
+            this.logViewer.render();
+        });
+    }
+
+    createColorItem(label, color, onChange) {
+        const item = document.createElement('div');
+        item.className = 'color-item';
+
+        const labelEl = document.createElement('label');
+        labelEl.textContent = label;
+
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = colorManager.hslToHex(color);
+
+        input.addEventListener('change', (e) => {
+            onChange(e.target.value);
+        });
+
+        item.appendChild(labelEl);
+        item.appendChild(input);
+
+        return item;
+    }
+
+    async initFilters() {
+        // Populate filter options
+        const fiberTypeSelect = document.getElementById('filter-fiber-type');
+
+        const fiberTypes = await api.getAllFiberTypes();
+        fiberTypes.forEach(type => {
+            const option = document.createElement('option');
+            option.value = type;
+            option.textContent = type;
+            fiberTypeSelect.appendChild(option);
+        });
+
+        // Apply filters button
+        document.getElementById('apply-filters').addEventListener('click', () => {
+            this.applyFilters();
+        });
+    }
+
+    applyFilters() {
+        // Get filter values
+        this.filters.showClosed = document.getElementById('filter-closed').checked;
+
+        const fiberTypeSelect = document.getElementById('filter-fiber-type');
+        const selectedTypes = Array.from(fiberTypeSelect.selectedOptions).map(opt => opt.value);
+        this.filters.fiberTypes = selectedTypes.filter(t => t !== '');
+
+        this.filters.timeRange = document.getElementById('filter-time-range').value;
+
+        // Apply filters to fibers
+        this.filterFibers();
+    }
+
+    filterFibers() {
+        this.filteredFibers = this.allFibers.filter(fiber => {
+            // Filter by closed status
+            if (!this.filters.showClosed && fiber.closed) {
+                return false;
+            }
+
+            // Filter by fiber type
+            if (this.filters.fiberTypes.length > 0) {
+                if (!this.filters.fiberTypes.includes(fiber.fiber_type)) {
+                    return false;
+                }
+            }
+
+            // Filter by time range
+            if (this.filters.timeRange !== 'all') {
+                const now = Date.now();
+                const lastActivity = new Date(fiber.last_activity).getTime();
+                const ranges = {
+                    '1h': 3600000,
+                    '6h': 21600000,
+                    '24h': 86400000,
+                    '7d': 604800000,
+                };
+
+                if (now - lastActivity > ranges[this.filters.timeRange]) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+
+        this.timeline.setFibers(this.filteredFibers);
+    }
+
+    async loadData() {
+        try {
+            this.showLoading(true);
+
+            // Get all fiber types
+            const fiberTypes = await api.getAllFiberTypes();
+
+            // Fetch fibers for each type
+            const allFibers = [];
+            for (const type of fiberTypes) {
+                try {
+                    const response = await api.listFibers({
+                        type: type,
+                        limit: 1000,
+                    });
+                    allFibers.push(...response.fibers);
+                } catch (error) {
+                    console.warn(`Failed to fetch fibers of type ${type}:`, error);
+                }
+            }
+
+            this.allFibers = allFibers;
+            this.applyFilters();
+        } catch (error) {
+            console.error('Failed to load data:', error);
+        } finally {
+            this.showLoading(false);
+        }
+    }
+
+    async refresh() {
+        await this.loadData();
+        // Re-render current fiber if one is selected
+        if (this.timeline.selectedFiberId) {
+            await this.logViewer.loadFiber(this.timeline.selectedFiberId);
+        }
+    }
+
+    async onFiberSelected(fiberId) {
+        await this.logViewer.loadFiber(fiberId);
+    }
+
+    showLoading(show) {
+        const overlay = document.getElementById('loading-overlay');
+        overlay.style.display = show ? 'flex' : 'none';
+    }
+}
+
+// Start the application when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new NoilApp();
+});

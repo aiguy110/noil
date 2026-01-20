@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Noil - Log Correlation Viewer</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Left Collapsible Drawer -->
+        <aside id="drawer" class="drawer">
+            <div class="drawer-header">
+                <button id="drawer-toggle" class="drawer-toggle" aria-label="Toggle drawer">
+                    <span class="icon">◀</span>
+                </button>
+            </div>
+            <div class="drawer-content">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="filters">Filters</button>
+                    <button class="tab-btn" data-tab="colors">Colors</button>
+                </div>
+
+                <!-- Filters Tab -->
+                <div id="tab-filters" class="tab-content active">
+                    <h3>Fiber Filters</h3>
+                    <div class="filter-section">
+                        <label>
+                            <input type="checkbox" id="filter-closed" checked>
+                            Show Closed Fibers
+                        </label>
+                    </div>
+                    <div class="filter-section">
+                        <label for="filter-fiber-type">Fiber Type:</label>
+                        <select id="filter-fiber-type" multiple size="5">
+                            <option value="">All Types</option>
+                        </select>
+                    </div>
+                    <div class="filter-section">
+                        <label for="filter-time-range">Time Range:</label>
+                        <select id="filter-time-range">
+                            <option value="1h">Last Hour</option>
+                            <option value="6h">Last 6 Hours</option>
+                            <option value="24h" selected>Last 24 Hours</option>
+                            <option value="7d">Last 7 Days</option>
+                            <option value="all">All Time</option>
+                        </select>
+                    </div>
+                    <button id="apply-filters" class="btn btn-primary">Apply Filters</button>
+                </div>
+
+                <!-- Colors Tab -->
+                <div id="tab-colors" class="tab-content">
+                    <h3>Color Configuration</h3>
+
+                    <div class="color-section">
+                        <h4>Fiber Types</h4>
+                        <div id="fiber-type-colors" class="color-list">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <div class="color-section">
+                        <h4>Source Files</h4>
+                        <div id="source-colors" class="color-list">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <button id="reset-colors" class="btn btn-secondary">Reset to Defaults</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main id="main-content" class="main-content">
+            <!-- Timeline -->
+            <section id="timeline-section" class="timeline-section">
+                <div class="timeline-header">
+                    <h2>Fiber Timeline</h2>
+                    <div class="timeline-controls">
+                        <button id="zoom-in" class="btn-icon" title="Zoom In">+</button>
+                        <button id="zoom-out" class="btn-icon" title="Zoom Out">−</button>
+                        <button id="refresh" class="btn-icon" title="Refresh">↻</button>
+                    </div>
+                </div>
+                <div id="timeline-container" class="timeline-container">
+                    <div id="timeline-canvas" class="timeline-canvas">
+                        <!-- Timeline rendered here -->
+                    </div>
+                </div>
+                <div id="timeline-axis" class="timeline-axis">
+                    <!-- Time axis labels -->
+                </div>
+            </section>
+
+            <!-- Log Viewer -->
+            <section id="log-viewer-section" class="log-viewer-section">
+                <div class="log-viewer-header">
+                    <h2 id="log-viewer-title">Select a fiber to view logs</h2>
+                    <div class="log-viewer-info">
+                        <span id="fiber-info"></span>
+                    </div>
+                </div>
+                <div id="log-viewer" class="log-viewer">
+                    <div id="log-content" class="log-content">
+                        <!-- Logs displayed here -->
+                    </div>
+                </div>
+                <div class="log-viewer-footer">
+                    <button id="load-more-logs" class="btn btn-secondary" style="display: none;">Load More</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/api.js"></script>
+    <script src="js/colors.js"></script>
+    <script src="js/timeline.js"></script>
+    <script src="js/logviewer.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

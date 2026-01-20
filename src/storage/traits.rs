@@ -88,6 +88,12 @@ pub trait Storage: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<StoredLog>, StorageError>;
+
+    /// Get all unique fiber types
+    async fn get_all_fiber_types(&self) -> Result<Vec<String>, StorageError>;
+
+    /// Get all unique source IDs
+    async fn get_all_source_ids(&self) -> Result<Vec<String>, StorageError>;
 }
 
 /// Storage errors

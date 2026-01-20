@@ -362,3 +362,19 @@ pub async fn get_fiber_logs(
         offset: params.offset(),
     }))
 }
+
+/// GET /api/fiber-types
+pub async fn list_fiber_types(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let types = state.storage.get_all_fiber_types().await?;
+    Ok(Json(types))
+}
+
+/// GET /api/sources
+pub async fn list_sources(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let sources = state.storage.get_all_source_ids().await?;
+    Ok(Json(sources))
+}

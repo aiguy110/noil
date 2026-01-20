@@ -616,6 +616,52 @@ impl Storage for DuckDbStorage {
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
     }
+
+    async fn get_all_fiber_types(&self) -> Result<Vec<String>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT fiber_type FROM fibers ORDER BY fiber_type",
+            )?;
+
+            let rows = stmt.query_map([], |row| {
+                row.get::<_, String>(0)
+            })?;
+
+            let mut types = Vec::new();
+            for row in rows {
+                types.push(row?);
+            }
+            Ok(types)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_all_source_ids(&self) -> Result<Vec<String>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT source_id FROM raw_logs ORDER BY source_id",
+            )?;
+
+            let rows = stmt.query_map([], |row| {
+                row.get::<_, String>(0)
+            })?;
+
+            let mut sources = Vec::new();
+            for row in rows {
+                sources.push(row?);
+            }
+            Ok(sources)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
 }
 
 #[cfg(test)]
