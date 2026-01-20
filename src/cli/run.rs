@@ -359,18 +359,29 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         } => {
             match result {
                 Ok(Ok(Ok(()))) => {
-                    info!("Sequencer completed naturally");
-                    let _ = shutdown_tx.send(true);
+                    info!("Log ingestion complete. Web server continues running. Press Ctrl+C to shutdown.");
+                    // Don't send shutdown signal - let web server continue running
+                    // Wait for Ctrl+C
+                    match signal::ctrl_c().await {
+                        Ok(()) => {
+                            info!("Shutdown signal received");
+                            let _ = shutdown_tx.send(true);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to listen for shutdown signal");
+                            let _ = shutdown_tx.send(true);
+                        }
+                    }
                 }
                 Ok(Ok(Err(e))) => {
-                    error!(error = %e, "Sequencer error");
+                    error!(error = %e, "Sequencer error, shutting down");
                     let _ = shutdown_tx.send(true);
                 }
                 Ok(Err(())) => {
                     // Sequencer was aborted
                 }
                 Err(e) => {
-                    error!(error = %e, "Sequencer task join error");
+                    error!(error = %e, "Sequencer task join error, shutting down");
                     let _ = shutdown_tx.send(true);
                 }
             }
