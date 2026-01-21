@@ -409,9 +409,22 @@ body {
 
 .log-line {
     padding: 4px 10px;
-    border-left: 3px solid transparent;
+    padding-left: 13px; /* 10px + 3px for the strip */
     white-space: pre-wrap;
     word-break: break-all;
+    transition: background-color 0.1s;
+    position: relative;
+}
+
+/* Color strip as pseudo-element so box-shadow can appear on top */
+.log-line::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background-color: var(--log-line-color, transparent);
     transition: background-color 0.1s;
 }
 
@@ -559,12 +572,14 @@ body {
     cursor: pointer;
     font-size: 12px;
     border-radius: 2px;
-    transition: background-color 0.2s;
+    transition: background-color 0.2s, box-shadow 0.2s;
+    position: relative;
 }
 
 .nav-item.current {
-    background-color: var(--accent-color);
-    opacity: 0.3;
+    box-shadow: 0 0 0 2px var(--accent-color),
+                0 0 12px rgba(0, 122, 204, 0.6);
+    z-index: 10;
 }
 
 .nav-item:hover {
@@ -583,6 +598,29 @@ body {
     font-size: 10px;
 }
 
+.nav-item-timestamp-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.nav-item-timestamp {
+    color: var(--accent-color);
+    font-family: monospace;
+    font-size: 10px;
+}
+
+.nav-item-source {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
 .empty-message {
     color: var(--text-secondary);
     font-style: italic;
@@ -598,6 +636,10 @@ body {
 .log-line.selected {
     box-shadow: 0 0 0 2px var(--accent-color),
                 0 0 12px rgba(0, 122, 204, 0.6);
-    border-left-color: var(--accent-color);
-    border-left-width: 3px;
+    z-index: 10;
+}
+
+.log-line.selected::before {
+    background-color: var(--accent-color);
+    z-index: -1;
 }

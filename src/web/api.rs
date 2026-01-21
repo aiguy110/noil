@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::config::types::FiberTypeConfig;
 use crate::storage::{Storage, StorageError, StoredLog, FiberRecord};
 
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<dyn Storage>,
+    pub fiber_types: Arc<std::collections::HashMap<String, FiberTypeConfig>>,
 }
 
 // ============================================================================
@@ -149,6 +151,12 @@ impl From<FiberRecord> for FiberDto {
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FiberTypeMetadata {
+    pub name: String,
+    pub is_source_fiber: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,9 +374,23 @@ pub async fn get_fiber_logs(
 /// GET /api/fiber-types
 pub async fn list_fiber_types(
     State(state): State<AppState>,
-) -> Result<Json<Vec<String>>, ApiError> {
+) -> Result<Json<Vec<FiberTypeMetadata>>, ApiError> {
     let types = state.storage.get_all_fiber_types().await?;
-    Ok(Json(types))
+    let metadata: Vec<FiberTypeMetadata> = types
+        .into_iter()
+        .map(|name| {
+            let is_source_fiber = state
+                .fiber_types
+                .get(&name)
+                .map(|ft| ft.is_source_fiber)
+                .unwrap_or(false);
+            FiberTypeMetadata {
+                name,
+                is_source_fiber,
+            }
+        })
+        .collect();
+    Ok(Json(metadata))
 }
 
 /// GET /api/sources

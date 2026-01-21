@@ -14,9 +14,11 @@ class NoilApp {
         this.filteredFibers = [];
 
         // Navigation state
-        this.navHistory = [];           // [{fiberId, logId}]
+        this.navHistory = [];           // [{fiberId, logId, timestamp, sourceId}]
         this.navHistoryPosition = -1;   // Current position in history
         this.selectedLogId = null;      // Currently selected log line
+        this.selectedLogTimestamp = null; // Timestamp of selected log line
+        this.selectedLogSourceId = null; // Source ID of selected log line
         this.logFibersCache = {};       // Map: logId -> fiber list
 
         this.init();
@@ -153,36 +155,25 @@ class NoilApp {
     async initColorConfig() {
         // Populate fiber type colors
         const fiberTypeContainer = document.getElementById('fiber-type-colors');
-        const sourceContainer = document.getElementById('source-colors');
 
-        // Get all fiber types and sources
-        const fiberTypes = await api.getAllFiberTypes();
-        const sources = await api.getAllSources();
+        // Get all fiber type metadata
+        const fiberTypeMetadata = await api.getAllFiberTypes();
+
+        // Sort fiber types: source fiber types first, then traced
+        const sortedMetadata = this.sortFiberTypeMetadata(fiberTypeMetadata);
 
         // Create color pickers for fiber types
-        fiberTypes.forEach(type => {
+        sortedMetadata.forEach(metadata => {
             const item = this.createColorItem(
-                type,
-                colorManager.getFiberTypeColor(type),
+                metadata.name,
+                colorManager.getFiberTypeColor(metadata.name),
                 (color) => {
-                    colorManager.setFiberTypeColor(type, color);
+                    colorManager.setFiberTypeColor(metadata.name, color);
                     this.timeline.render();
-                }
-            );
-            fiberTypeContainer.appendChild(item);
-        });
-
-        // Create color pickers for sources
-        sources.forEach(source => {
-            const item = this.createColorItem(
-                source,
-                colorManager.getSourceColor(source),
-                (color) => {
-                    colorManager.setSourceColor(source, color);
                     this.logViewer.render();
                 }
             );
-            sourceContainer.appendChild(item);
+            fiberTypeContainer.appendChild(item);
         });
 
         // Reset colors button
@@ -219,11 +210,15 @@ class NoilApp {
         // Populate filter options
         const fiberTypeSelect = document.getElementById('filter-fiber-type');
 
-        const fiberTypes = await api.getAllFiberTypes();
-        fiberTypes.forEach(type => {
+        const fiberTypeMetadata = await api.getAllFiberTypes();
+
+        // Sort fiber types: source fiber types first, then traced
+        const sortedMetadata = this.sortFiberTypeMetadata(fiberTypeMetadata);
+
+        sortedMetadata.forEach(metadata => {
             const option = document.createElement('option');
-            option.value = type;
-            option.textContent = type;
+            option.value = metadata.name;
+            option.textContent = metadata.name;
             fiberTypeSelect.appendChild(option);
         });
 
@@ -255,7 +250,7 @@ class NoilApp {
         };
     }
 
-    pushNavHistory(fiberId, logId = null) {
+    pushNavHistory(fiberId, logId = null, timestamp = null, sourceId = null) {
         // Check if this fiber+log combo already exists in history
         const existingIndex = this.navHistory.findIndex(entry =>
             entry.fiberId === fiberId && entry.logId === logId
@@ -274,13 +269,13 @@ class NoilApp {
         }
 
         // Push new entry
-        this.navHistory.push({ fiberId, logId });
+        this.navHistory.push({ fiberId, logId, timestamp, sourceId });
         this.navHistoryPosition = this.navHistory.length - 1;
 
         this.updateNavigationUI();
     }
 
-    navigateBack() {
+    async navigateBack() {
         if (this.navHistoryPosition > 0) {
             this.navHistoryPosition--;
             const entry = this.navHistory[this.navHistoryPosition];
@@ -290,11 +285,12 @@ class NoilApp {
             this.timeline.render();
 
             // Load fiber logs
-            this.logViewer.loadFiber(entry.fiberId);
+            await this.logViewer.loadFiber(entry.fiberId);
 
             // Restore log selection if any
             if (entry.logId) {
                 this.selectedLogId = entry.logId;
+                this.selectedLogTimestamp = entry.timestamp;
                 this.logViewer.highlightLog(entry.logId);
                 this.filterTimelineByLog(entry.logId);
             } else {
@@ -305,7 +301,7 @@ class NoilApp {
         }
     }
 
-    navigateForward() {
+    async navigateForward() {
         if (this.navHistoryPosition < this.navHistory.length - 1) {
             this.navHistoryPosition++;
             const entry = this.navHistory[this.navHistoryPosition];
@@ -315,11 +311,12 @@ class NoilApp {
             this.timeline.render();
 
             // Load fiber logs
-            this.logViewer.loadFiber(entry.fiberId);
+            await this.logViewer.loadFiber(entry.fiberId);
 
             // Restore log selection if any
             if (entry.logId) {
                 this.selectedLogId = entry.logId;
+                this.selectedLogTimestamp = entry.timestamp;
                 this.logViewer.highlightLog(entry.logId);
                 this.filterTimelineByLog(entry.logId);
             } else {
@@ -333,15 +330,32 @@ class NoilApp {
     async selectLogLine(logId) {
         this.selectedLogId = logId;
 
-        // Find the log's timestamp from loaded logs
+        // Find the log's timestamp and source from loaded logs
         console.log('App: Looking for log', logId, 'in', this.logViewer.logs.length, 'logs');
         const logData = this.logViewer.logs.find(log => log.id === logId);
         console.log('App: Found logData =', logData);
+        let logTimestamp = null;
+        let logSourceId = null;
         if (logData) {
             console.log('App: Setting timestamp =', logData.timestamp);
+            logTimestamp = logData.timestamp;
+            logSourceId = logData.source_id;
             this.timeline.setSelectedLogTimestamp(logData.timestamp);
         } else {
             console.log('App: Log not found in logViewer.logs');
+        }
+
+        // Store timestamp and source for potential use in navigation history
+        this.selectedLogTimestamp = logTimestamp;
+        this.selectedLogSourceId = logSourceId;
+
+        // Update the current navigation entry with the selected log's info
+        if (this.navHistory.length > 0 && this.navHistoryPosition >= 0) {
+            const currentEntry = this.navHistory[this.navHistoryPosition];
+            currentEntry.logId = logId;
+            currentEntry.timestamp = logTimestamp;
+            currentEntry.sourceId = logSourceId;
+            this.updateNavigationUI();
         }
 
         // Fetch fibers containing this log
@@ -375,6 +389,8 @@ class NoilApp {
 
     clearLogSelection() {
         this.selectedLogId = null;
+        this.selectedLogTimestamp = null;
+        this.selectedLogSourceId = null;
         this.logViewer.highlightLog(null);
         this.timeline.clearSelectedLogTimestamp();
 
@@ -416,12 +432,40 @@ class NoilApp {
                 item.classList.add('current');
             }
 
+            // Format timestamp and source badge if available
+            let timestampInfoHtml = '';
+            if (entry.logId && entry.timestamp) {
+                const date = new Date(entry.timestamp);
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                const seconds = String(date.getSeconds()).padStart(2, '0');
+                const ms = String(date.getMilliseconds()).padStart(3, '0');
+                const timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+
+                // Add source badge if available
+                let sourceBadgeHtml = '';
+                if (entry.sourceId) {
+                    const fiberTypeColor = colorManager.getFiberTypeColor(entry.sourceId);
+                    sourceBadgeHtml = `<span class="nav-item-source" style="background-color: ${fiberTypeColor};">${entry.sourceId}</span>`;
+                }
+
+                timestampInfoHtml = `
+                    <div class="nav-item-timestamp-row">
+                        <span class="nav-item-timestamp">${timeStr}</span>
+                        ${sourceBadgeHtml}
+                    </div>`;
+            }
+
             item.innerHTML = `
                 <div class="nav-item-type">${fiber.fiber_type}</div>
                 <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
+                ${timestampInfoHtml}
             `;
 
-            item.addEventListener('click', () => {
+            item.addEventListener('click', async () => {
                 this.navHistoryPosition = index;
                 const historyEntry = this.navHistory[index];
 
@@ -430,10 +474,11 @@ class NoilApp {
                 this.timeline.render();
 
                 // Load fiber logs
-                this.logViewer.loadFiber(historyEntry.fiberId);
+                await this.logViewer.loadFiber(historyEntry.fiberId);
 
                 if (historyEntry.logId) {
                     this.selectedLogId = historyEntry.logId;
+                    this.selectedLogTimestamp = historyEntry.timestamp;
                     this.logViewer.highlightLog(historyEntry.logId);
                     this.filterTimelineByLog(historyEntry.logId);
                 } else {
@@ -475,7 +520,7 @@ class NoilApp {
 
             item.addEventListener('click', async () => {
                 // Push to history with current log selection
-                this.pushNavHistory(fiber.id, this.selectedLogId);
+                this.pushNavHistory(fiber.id, this.selectedLogId, this.selectedLogTimestamp, this.selectedLogSourceId);
 
                 // Update timeline selection without triggering callback
                 this.timeline.selectedFiberId = fiber.id;
@@ -492,6 +537,19 @@ class NoilApp {
 
             container.appendChild(item);
         });
+    }
+
+    sortFiberTypeMetadata(fiberTypeMetadata) {
+        // Separate source fiber types from traced fiber types
+        const sourceFiberTypes = fiberTypeMetadata.filter(ft => ft.is_source_fiber);
+        const tracedFiberTypes = fiberTypeMetadata.filter(ft => !ft.is_source_fiber);
+
+        // Sort each group alphabetically by name
+        sourceFiberTypes.sort((a, b) => a.name.localeCompare(b.name));
+        tracedFiberTypes.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Return source fiber types first, then traced
+        return [...sourceFiberTypes, ...tracedFiberTypes];
     }
 
     applyFilters() {
@@ -555,15 +613,15 @@ class NoilApp {
 
             // Fetch fibers for each type
             const allFibers = [];
-            for (const type of fiberTypes) {
+            for (const metadata of fiberTypes) {
                 try {
                     const response = await api.listFibers({
-                        type: type,
+                        type: metadata.name,
                         limit: 1000,
                     });
                     allFibers.push(...response.fibers);
                 } catch (error) {
-                    console.warn(`Failed to fetch fibers of type ${type}:`, error);
+                    console.warn(`Failed to fetch fibers of type ${metadata.name}:`, error);
                 }
             }
 
@@ -610,10 +668,10 @@ class NoilApp {
 
         if (this.selectedLogId) {
             // If a log is selected, add to navigation history (building a path)
-            this.pushNavHistory(fiberId, this.selectedLogId);
+            this.pushNavHistory(fiberId, this.selectedLogId, this.selectedLogTimestamp, this.selectedLogSourceId);
         } else {
             // If no log is selected, replace history with new root
-            this.navHistory = [{ fiberId, logId: null }];
+            this.navHistory = [{ fiberId, logId: null, timestamp: null, sourceId: null }];
             this.navHistoryPosition = 0;
             this.updateNavigationUI();
         }

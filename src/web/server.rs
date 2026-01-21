@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tower_http::services::ServeDir;
 
-use crate::config::WebConfig;
+use crate::config::{types::FiberTypeConfig, WebConfig};
 use crate::storage::Storage;
 
 use super::api::{
@@ -15,10 +15,11 @@ use super::api::{
 /// Start the web server with the given storage backend and configuration
 pub async fn run_server(
     storage: Arc<dyn Storage>,
+    fiber_types: Arc<std::collections::HashMap<String, FiberTypeConfig>>,
     config: WebConfig,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app_state = AppState { storage };
+    let app_state = AppState { storage, fiber_types };
 
     // API routes
     let api_routes = Router::new()

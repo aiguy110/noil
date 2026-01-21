@@ -6,18 +6,47 @@ class Timeline {
         this.container = containerEl;
         this.onFiberSelect = onFiberSelect;
         this.fibers = [];
+        this.fiberTypeMetadata = [];
         this.selectedFiberId = null;
         this.selectedLogTimestamp = null;
         this.zoom = 1.0;
         this.minZoom = 0.1;
         this.maxZoom = 10.0;
 
+        this.loadFiberTypeMetadata();
         this.render();
     }
 
+    async loadFiberTypeMetadata() {
+        try {
+            this.fiberTypeMetadata = await api.getAllFiberTypes();
+        } catch (error) {
+            console.error('Failed to load fiber type metadata:', error);
+            this.fiberTypeMetadata = [];
+        }
+    }
+
     setFibers(fibers) {
-        this.fibers = fibers;
+        this.fibers = this.sortFibers(fibers);
         this.render();
+    }
+
+    sortFibers(fibers) {
+        // Build a map of fiber type name to is_source_fiber
+        const sourceMap = new Map(
+            this.fiberTypeMetadata.map(ft => [ft.name, ft.is_source_fiber])
+        );
+
+        // Separate source fibers from traced fibers
+        const sourceFibers = fibers.filter(f => sourceMap.get(f.fiber_type) === true);
+        const tracedFibers = fibers.filter(f => sourceMap.get(f.fiber_type) !== true);
+
+        // Sort each group by fiber_type name
+        sourceFibers.sort((a, b) => a.fiber_type.localeCompare(b.fiber_type));
+        tracedFibers.sort((a, b) => a.fiber_type.localeCompare(b.fiber_type));
+
+        // Return source fibers first, then traced
+        return [...sourceFibers, ...tracedFibers];
     }
 
     selectFiber(fiberId) {
@@ -106,7 +135,9 @@ class Timeline {
             // Add tooltip
             const duration = end - start;
             const durationStr = this.formatDuration(duration);
-            line.title = `${fiber.fiber_type}\nID: ${fiber.id}\nDuration: ${durationStr}\n${fiber.closed ? 'Closed' : 'Open'}`;
+            const isSourceFiber = this.fiberTypeMetadata.find(ft => ft.name === fiber.fiber_type)?.is_source_fiber;
+            const fiberTypeLabel = isSourceFiber ? 'source' : 'traced';
+            line.title = `${fiber.fiber_type}\nType: ${fiberTypeLabel}\nID: ${fiber.id}\nDuration: ${durationStr}\n${fiber.closed ? 'Closed' : 'Open'}`;
 
             line.addEventListener('click', () => {
                 this.selectFiber(fiber.id);

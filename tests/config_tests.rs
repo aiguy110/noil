@@ -22,11 +22,11 @@ fn test_generated_config_is_valid() {
     assert!(config.fiber_types.contains_key("request_trace"));
     assert!(config.fiber_types.contains_key("simple_log"));
     // Check for auto-generated source fibers
-    assert!(config.fiber_types.contains_key("nginx_access_all"));
-    assert!(config.fiber_types.contains_key("application_log_all"));
-    assert!(config.fiber_types.contains_key("program1_all"));
-    assert!(config.fiber_types.contains_key("program2_all"));
-    assert!(config.fiber_types.contains_key("simple_service_all"));
+    assert!(config.fiber_types.contains_key("nginx_access"));
+    assert!(config.fiber_types.contains_key("application_log"));
+    assert!(config.fiber_types.contains_key("program1"));
+    assert!(config.fiber_types.contains_key("program2"));
+    assert!(config.fiber_types.contains_key("simple_service"));
 }
 
 #[test]
@@ -796,11 +796,11 @@ web:
     // 1 explicit fiber type + 2 auto-generated source fibers
     assert_eq!(config.fiber_types.len(), 3);
     assert!(config.fiber_types.contains_key("custom_fiber"));
-    assert!(config.fiber_types.contains_key("source1_all"));
-    assert!(config.fiber_types.contains_key("source2_all"));
+    assert!(config.fiber_types.contains_key("source1"));
+    assert!(config.fiber_types.contains_key("source2"));
 
     // Verify auto-generated fiber has correct properties
-    let source1_fiber = &config.fiber_types["source1_all"];
+    let source1_fiber = &config.fiber_types["source1"];
     assert_eq!(
         source1_fiber.description,
         Some("Auto-generated fiber containing all logs from source1".to_string())
@@ -878,7 +878,7 @@ web:
     // Only the explicitly defined fiber type should exist
     assert_eq!(config.fiber_types.len(), 1);
     assert!(config.fiber_types.contains_key("custom_fiber"));
-    assert!(!config.fiber_types.contains_key("source1_all"));
+    assert!(!config.fiber_types.contains_key("source1"));
 }
 
 #[test]
@@ -899,7 +899,7 @@ sources:
       follow: true
 
 fiber_types:
-  source1_all:
+  source1:
     description: "Custom override of auto-generated fiber"
     temporal:
       max_gap: 10s
@@ -940,10 +940,10 @@ web:
 
     // Should have only the manually defined fiber type (not auto-generated)
     assert_eq!(config.fiber_types.len(), 1);
-    assert!(config.fiber_types.contains_key("source1_all"));
+    assert!(config.fiber_types.contains_key("source1"));
 
     // Verify it uses the custom definition, not auto-generated
-    let fiber = &config.fiber_types["source1_all"];
+    let fiber = &config.fiber_types["source1"];
     assert_eq!(
         fiber.description,
         Some("Custom override of auto-generated fiber".to_string())

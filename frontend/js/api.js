@@ -77,9 +77,15 @@ class NoilAPI {
         return this.request(`/api/fibers/${fiberId}/logs?${query}`);
     }
 
-    // Get all fiber types
+    // Get all fiber types with metadata
     async getAllFiberTypes() {
         return this.request('/api/fiber-types');
+    }
+
+    // Get all fiber type names (for backwards compatibility)
+    async getAllFiberTypeNames() {
+        const metadata = await this.getAllFiberTypes();
+        return metadata.map(ft => ft.name);
     }
 
     // Get all source IDs

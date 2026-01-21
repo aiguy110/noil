@@ -374,10 +374,11 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     // Start web server task
     info!("Starting web server on {}", config.web.listen);
     let web_storage = storage.clone();
+    let web_fiber_types = Arc::new(config.fiber_types.clone());
     let web_config = config.web.clone();
     let web_shutdown_rx = shutdown_rx.clone();
     let web_handle = tokio::spawn(async move {
-        run_server(web_storage, web_config, web_shutdown_rx)
+        run_server(web_storage, web_fiber_types, web_config, web_shutdown_rx)
             .await
             .map_err(|e| RunError::WebServer(e.to_string()))
     });

@@ -63,7 +63,7 @@ fn expand_paths(config: &mut Config) {
 /// jumping-off point for UI navigation.
 fn add_auto_source_fibers(config: &mut Config) {
     for source_name in config.sources.keys() {
-        let fiber_type_name = format!("{}_all", source_name);
+        let fiber_type_name = source_name.clone();
 
         // Skip if a fiber type with this name already exists
         if config.fiber_types.contains_key(&fiber_type_name) {
@@ -100,6 +100,7 @@ fn add_auto_source_fibers(config: &mut Config) {
                 derived: Some(source_name.clone()),
             }],
             sources: source_patterns,
+            is_source_fiber: true,
         };
 
         config.fiber_types.insert(fiber_type_name, fiber_type);

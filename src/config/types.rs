@@ -61,6 +61,8 @@ pub struct FiberTypeConfig {
     pub temporal: TemporalConfig,
     pub attributes: Vec<AttributeConfig>,
     pub sources: HashMap<String, FiberSourceConfig>,
+    #[serde(default)]
+    pub is_source_fiber: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -345,6 +345,7 @@ mod tests {
                     derived: None,
                 }],
                 sources: fiber_sources,
+                is_source_fiber: false,
             },
         );
 

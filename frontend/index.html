@@ -18,13 +18,13 @@
             </div>
             <div class="drawer-content">
                 <div class="tabs">
-                    <button class="tab-btn active" data-tab="filters">Filters</button>
+                    <button class="tab-btn active" data-tab="navigation">Navigation</button>
+                    <button class="tab-btn" data-tab="filters">Filters</button>
                     <button class="tab-btn" data-tab="colors">Colors</button>
-                    <button class="tab-btn" data-tab="navigation">Navigation</button>
                 </div>
 
                 <!-- Filters Tab -->
-                <div id="tab-filters" class="tab-content active">
+                <div id="tab-filters" class="tab-content">
                     <h3>Fiber Filters</h3>
                     <div class="filter-section">
                         <label>
@@ -62,18 +62,11 @@
                         </div>
                     </div>
 
-                    <div class="color-section">
-                        <h4>Source Files</h4>
-                        <div id="source-colors" class="color-list">
-                            <!-- Populated dynamically -->
-                        </div>
-                    </div>
-
                     <button id="reset-colors" class="btn btn-secondary">Reset to Defaults</button>
                 </div>
 
                 <!-- Navigation Tab -->
-                <div id="tab-navigation" class="tab-content">
+                <div id="tab-navigation" class="tab-content active">
                     <div class="nav-controls">
                         <button id="nav-back" class="nav-btn" disabled>← Back</button>
                         <button id="nav-forward" class="nav-btn" disabled>Forward →</button>

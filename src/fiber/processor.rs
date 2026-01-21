@@ -637,6 +637,7 @@ mod tests {
                 );
                 sources
             },
+            is_source_fiber: false,
         }
     }
 
@@ -828,6 +829,7 @@ mod tests {
                 );
                 sources
             },
+            is_source_fiber: false,
         };
 
         let compiled = CompiledFiberType::from_config("test", &config).unwrap();
@@ -894,6 +896,7 @@ mod tests {
                 );
                 sources
             },
+            is_source_fiber: false,
         };
 
         let compiled = CompiledFiberType::from_config("test", &config).unwrap();

@@ -386,6 +386,7 @@ mod tests {
                 );
                 sources
             },
+            is_source_fiber: false,
         }
     }
 
@@ -515,6 +516,7 @@ mod tests {
                 },
             ],
             sources: HashMap::new(),
+            is_source_fiber: false,
         };
 
         let result = CompiledFiberType::from_config("test", &config);
@@ -536,6 +538,7 @@ mod tests {
                 derived: Some("${undefined}".to_string()),
             }],
             sources: HashMap::new(),
+            is_source_fiber: false,
         };
 
         let result = CompiledFiberType::from_config("test", &config);
