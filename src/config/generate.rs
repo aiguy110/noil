@@ -70,6 +70,21 @@ sources:
       follow: true
 
 # =============================================================================
+# AUTO-GENERATED SOURCE FIBERS
+# =============================================================================
+# By default, Noil automatically creates a fiber type for each source named
+# {source_name}_all. Each auto-generated fiber:
+#   - Collects all logs from that source
+#   - Never closes (max_gap: infinite)
+#   - Provides a convenient UI navigation starting point
+#
+# This feature is enabled by default. To disable it, uncomment:
+# auto_source_fibers: false
+#
+# You can also manually define a fiber type with the same name to override
+# the auto-generated version with custom settings.
+
+# =============================================================================
 # FIBER TYPES
 # =============================================================================
 # Define rules for correlating logs into fibers. Each fiber type specifies:
@@ -162,21 +177,6 @@ fiber_types:
             close: true
           - regex: '.+'  # Match any line
 
-  # Example: per-source fiber that never closes
-  nginx_all:
-    description: "All nginx logs as a single fiber"
-    temporal:
-      max_gap: infinite
-    attributes:
-      - name: source_marker
-        type: string
-        key: true
-        derived: "nginx"
-    sources:
-      nginx_access:
-        patterns:
-          - regex: '.+'
-
 # =============================================================================
 # PIPELINE SETTINGS
 # =============================================================================
@@ -191,9 +191,9 @@ pipeline:
     # What to do on unparseable lines: 'drop' or 'panic'
     on_parse_error: drop
   checkpoint:
+    # Checkpoints are stored in the DuckDB database (no separate file)
     enabled: true
     interval_seconds: 30
-    path: /var/lib/noil/checkpoint.json
 
 # =============================================================================
 # SEQUENCER SETTINGS

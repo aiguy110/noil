@@ -64,6 +64,7 @@ pub async fn run_processor(
     storage: Arc<dyn Storage>,
     config: &Config,
     config_version: u64,
+    shared_fiber_state: Option<crate::storage::checkpoint::SharedFiberProcessorState>,
 ) -> Result<(), PipelineError> {
     let batch_size = config.storage.batch_size;
     let flush_interval_secs = config.storage.flush_interval_seconds;
@@ -108,6 +109,13 @@ pub async fn run_processor(
                         // Process for fibers
                         let results = processor.process_log(&log);
 
+                        // Update shared checkpoint state if enabled
+                        if let Some(ref shared_state) = shared_fiber_state {
+                            if let Ok(mut guard) = shared_state.lock() {
+                                *guard = processor.create_checkpoint();
+                            }
+                        }
+
                         // Send fiber updates
                         for result in results {
                             if !result.memberships.is_empty()
@@ -149,6 +157,16 @@ pub async fn run_processor(
 
     // Flush all open fibers
     let flush_results = processor.flush();
+
+    // Update shared checkpoint state after flush to reflect that all fibers are now closed.
+    // This prevents a race condition where the checkpoint is saved (after sequencer completion)
+    // before the fiber processor has flushed, leading to stale open fibers in the checkpoint.
+    if let Some(ref shared_state) = shared_fiber_state {
+        if let Ok(mut guard) = shared_state.lock() {
+            *guard = processor.create_checkpoint();
+        }
+    }
+
     for result in flush_results {
         if !result.memberships.is_empty()
             || !result.new_fibers.is_empty()
@@ -333,6 +351,7 @@ mod tests {
         Config {
             sources,
             fiber_types,
+            auto_source_fibers: true,
             pipeline: PipelineConfig {
                 backpressure: BackpressureConfig {
                     strategy: BackpressureStrategy::Block,
@@ -344,7 +363,6 @@ mod tests {
                 checkpoint: CheckpointConfig {
                     enabled: false,
                     interval_seconds: 30,
-                    path: PathBuf::from("/tmp/checkpoint.json"),
                 },
             },
             sequencer: SequencerConfig {
@@ -387,7 +405,7 @@ mod tests {
         let storage_clone = storage.clone();
         let config_clone = config.clone();
         let processor_handle = tokio::spawn(async move {
-            run_processor(input_rx, output_tx, processor, storage_clone, &config_clone, 1).await
+            run_processor(input_rx, output_tx, processor, storage_clone, &config_clone, 1, None).await
         });
 
         // Send a log

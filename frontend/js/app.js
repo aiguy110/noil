@@ -83,6 +83,51 @@ class NoilApp {
         document.getElementById('refresh').addEventListener('click', () => {
             this.refresh();
         });
+
+        // Initialize timeline resize functionality
+        this.initTimelineResize();
+    }
+
+    initTimelineResize() {
+        const resizeHandle = document.getElementById('timeline-resize-handle');
+        const timelineSection = document.getElementById('timeline-section');
+        let isResizing = false;
+        let startY = 0;
+        let startHeight = 0;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            startY = e.clientY;
+            startHeight = timelineSection.offsetHeight;
+            resizeHandle.classList.add('dragging');
+
+            // Prevent text selection during drag
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const deltaY = e.clientY - startY;
+            const newHeight = startHeight + deltaY;
+
+            // Set min and max heights
+            const minHeight = 100;
+            const maxHeight = window.innerHeight - 300; // Leave room for log viewer
+
+            if (newHeight >= minHeight && newHeight <= maxHeight) {
+                timelineSection.style.height = `${newHeight}px`;
+                // Update CSS variable for consistency
+                document.documentElement.style.setProperty('--timeline-height', `${newHeight}px`);
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizeHandle.classList.remove('dragging');
+            }
+        });
     }
 
     initLogViewer() {

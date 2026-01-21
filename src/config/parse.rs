@@ -37,6 +37,11 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     // Expand tilde in all paths
     expand_paths(&mut config);
 
+    // Add automatic source fibers if enabled
+    if config.auto_source_fibers {
+        add_auto_source_fibers(&mut config);
+    }
+
     validate_config(&config)?;
 
     Ok(config)
@@ -49,11 +54,56 @@ fn expand_paths(config: &mut Config) {
         source.path = expand_tilde(&source.path);
     }
 
-    // Expand checkpoint path
-    config.pipeline.checkpoint.path = expand_tilde(&config.pipeline.checkpoint.path);
-
     // Expand storage path
     config.storage.path = expand_tilde(&config.storage.path);
+}
+
+/// Automatically generates a fiber type for each source that collects all logs
+/// from that source into a single never-closing fiber. This provides a convenient
+/// jumping-off point for UI navigation.
+fn add_auto_source_fibers(config: &mut Config) {
+    for source_name in config.sources.keys() {
+        let fiber_type_name = format!("{}_all", source_name);
+
+        // Skip if a fiber type with this name already exists
+        if config.fiber_types.contains_key(&fiber_type_name) {
+            continue;
+        }
+
+        // Create a never-closing fiber type that matches all logs from this source
+        let mut source_patterns = HashMap::new();
+        source_patterns.insert(
+            source_name.clone(),
+            FiberSourceConfig {
+                patterns: vec![PatternConfig {
+                    regex: ".+".to_string(),
+                    release_matching_peer_keys: vec![],
+                    release_self_keys: vec![],
+                    close: false,
+                }],
+            },
+        );
+
+        let fiber_type = FiberTypeConfig {
+            description: Some(format!(
+                "Auto-generated fiber containing all logs from {}",
+                source_name
+            )),
+            temporal: TemporalConfig {
+                max_gap: None, // infinite - never closes due to time
+                gap_mode: GapMode::Session,
+            },
+            attributes: vec![AttributeConfig {
+                name: "source_marker".to_string(),
+                attr_type: AttributeType::String,
+                key: true,
+                derived: Some(source_name.clone()),
+            }],
+            sources: source_patterns,
+        };
+
+        config.fiber_types.insert(fiber_type_name, fiber_type);
+    }
 }
 
 fn validate_config(config: &Config) -> Result<(), ConfigError> {

@@ -4,7 +4,7 @@ use crate::fiber::FiberProcessor;
 use crate::pipeline::{create_channel, run_processor, run_writer, FiberUpdate};
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
 use crate::source::reader::{LogRecord, SourceReader};
-use crate::storage::checkpoint::{Checkpoint, CheckpointManager, SequencerCheckpoint, SharedSourceState, SourceCheckpoint};
+use crate::storage::checkpoint::{Checkpoint, CheckpointManager, SequencerCheckpoint, SharedSourceState, SharedFiberProcessorState, SourceCheckpoint};
 use crate::storage::duckdb::DuckDbStorage;
 use crate::storage::traits::Storage;
 use crate::web::run_server;
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::signal;
-use tokio::sync::{watch, oneshot};
+use tokio::sync::{mpsc, watch, oneshot};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Error)]
@@ -71,14 +71,19 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 
     info!(config_version = config_version, "Computed config version");
 
+    // Initialize storage
+    info!(path = %config.storage.path.display(), "Initializing storage");
+    let storage = Arc::new(DuckDbStorage::new(&config.storage.path)?);
+    storage.init_schema().await?;
+
     // Load checkpoint if enabled
     let checkpoint = if config.pipeline.checkpoint.enabled {
         use crate::storage::checkpoint::CheckpointManager;
         let checkpoint_mgr = CheckpointManager::new(
-            &config.pipeline.checkpoint.path,
+            storage.clone(),
             std::time::Duration::from_secs(config.pipeline.checkpoint.interval_seconds),
         );
-        match checkpoint_mgr.load() {
+        match checkpoint_mgr.load().await {
             Ok(Some(checkpoint)) => {
                 if checkpoint.config_version != config_version {
                     warn!(
@@ -100,11 +105,6 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     } else {
         None
     };
-
-    // Initialize storage
-    info!(path = %config.storage.path.display(), "Initializing storage");
-    let storage = Arc::new(DuckDbStorage::new(&config.storage.path)?);
-    storage.init_schema().await?;
 
     // Create source readers (with checkpoint restoration if available)
     let mut readers = Vec::new();
@@ -195,12 +195,49 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     if let Some(ref checkpoint) = checkpoint {
         info!("Restoring fiber processor state from checkpoint");
         fiber_processor.restore_from_checkpoint(&checkpoint.fiber_processors);
+
+        // Close orphaned fibers in storage that aren't in the checkpoint
+        // This prevents duplicates when fibers were written to storage but didn't make it into
+        // the checkpoint before a crash
+        let checkpointed_fiber_ids: std::collections::HashSet<uuid::Uuid> = checkpoint
+            .fiber_processors
+            .values()
+            .flat_map(|fp| fp.open_fibers.iter().map(|f| f.fiber_id))
+            .collect();
+
+        info!(
+            checkpointed_fibers = checkpointed_fiber_ids.len(),
+            "Closing orphaned fibers not in checkpoint"
+        );
+
+        match storage.close_orphaned_fibers(&checkpointed_fiber_ids).await {
+            Ok(count) if count > 0 => {
+                warn!(
+                    closed_count = count,
+                    "Closed orphaned fibers that were in storage but not in checkpoint"
+                );
+            }
+            Ok(_) => {
+                info!("No orphaned fibers found");
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to close orphaned fibers");
+            }
+        }
     }
     info!(
         fiber_types = config.fiber_types.len(),
         open_fibers = fiber_processor.total_open_fibers(),
         "Fiber processor initialized"
     );
+
+    // Create shared state for fiber processor checkpointing (if enabled)
+    let shared_fiber_state: Option<SharedFiberProcessorState> = if config.pipeline.checkpoint.enabled {
+        let initial_state = fiber_processor.create_checkpoint();
+        Some(Arc::new(std::sync::Mutex::new(initial_state)))
+    } else {
+        None
+    };
 
     // Create channels
     let buffer_size = config.pipeline.backpressure.buffer_limit;
@@ -210,65 +247,94 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     // Create shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Create channel for triggering immediate checkpoint saves
+    // This allows critical events (shutdown, sequencer completion) to trigger
+    // checkpoint saves immediately rather than waiting for the next timer tick.
+    // This prevents state loss and duplicate fibers on restart.
+    let (checkpoint_save_tx, mut checkpoint_save_rx) = mpsc::channel::<()>(10);
+
     // Start periodic checkpoint saving task if enabled
     let checkpoint_handle = if config.pipeline.checkpoint.enabled {
-        let checkpoint_path = config.pipeline.checkpoint.path.clone();
+        let checkpoint_storage = storage.clone();
         let interval = config.pipeline.checkpoint.interval_seconds;
         let states = shared_states.clone();
         let source_configs = config.sources.clone();
+        let fiber_state = shared_fiber_state.clone();
         let mut shutdown_watch = shutdown_rx.clone();
 
         info!(
             interval_seconds = interval,
-            path = %checkpoint_path.display(),
             "Starting checkpoint task"
         );
 
         Some(tokio::spawn(async move {
             let mut checkpoint_mgr = CheckpointManager::new(
-                &checkpoint_path,
+                checkpoint_storage,
                 std::time::Duration::from_secs(interval),
             );
             let mut interval_ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
 
+            // Macro to build and save checkpoint
+            macro_rules! save_checkpoint {
+                () => {{
+                    // Build checkpoint from current state
+                    let mut sources = HashMap::new();
+                    for (source_id, state) in &states {
+                        if let Ok(guard) = state.lock() {
+                            sources.insert(
+                                source_id.clone(),
+                                SourceCheckpoint {
+                                    path: source_configs[source_id].path.clone(),
+                                    offset: guard.offset,
+                                    inode: guard.inode,
+                                    last_timestamp: guard.last_timestamp,
+                                },
+                            );
+                        }
+                    }
+
+                    // Capture fiber processor state
+                    let fiber_processors = if let Some(ref fiber_state) = fiber_state {
+                        if let Ok(guard) = fiber_state.lock() {
+                            guard.clone()
+                        } else {
+                            HashMap::new()
+                        }
+                    } else {
+                        HashMap::new()
+                    };
+
+                    let checkpoint = Checkpoint {
+                        version: 1,
+                        timestamp: chrono::Utc::now(),
+                        config_version,
+                        sources,
+                        sequencer: SequencerCheckpoint {
+                            watermarks: HashMap::new(),
+                        },
+                        fiber_processors,
+                    };
+
+                    if let Err(e) = checkpoint_mgr.save(&checkpoint).await {
+                        error!(error = %e, "Failed to save checkpoint");
+                    } else {
+                        tracing::debug!("Checkpoint saved successfully");
+                    }
+                }};
+            }
+
             loop {
                 tokio::select! {
                     _ = interval_ticker.tick() => {
-                        // Build checkpoint from current state
-                        let mut sources = HashMap::new();
-                        for (source_id, state) in &states {
-                            if let Ok(guard) = state.lock() {
-                                sources.insert(
-                                    source_id.clone(),
-                                    SourceCheckpoint {
-                                        path: source_configs[source_id].path.clone(),
-                                        offset: guard.offset,
-                                        inode: guard.inode,
-                                        last_timestamp: guard.last_timestamp,
-                                    },
-                                );
-                            }
-                        }
-
-                        let checkpoint = Checkpoint {
-                            version: 1,
-                            timestamp: chrono::Utc::now(),
-                            config_version,
-                            sources,
-                            sequencer: SequencerCheckpoint {
-                                watermarks: HashMap::new(),
-                            },
-                            fiber_processors: HashMap::new(),
-                        };
-
-                        if let Err(e) = checkpoint_mgr.save(&checkpoint) {
-                            error!(error = %e, "Failed to save checkpoint");
-                        } else {
-                            tracing::debug!("Checkpoint saved successfully");
-                        }
+                        save_checkpoint!();
+                    }
+                    Some(()) = checkpoint_save_rx.recv() => {
+                        info!("Immediate checkpoint save requested");
+                        save_checkpoint!();
                     }
                     _ = shutdown_watch.changed() => {
-                        info!("Checkpoint task shutting down");
+                        info!("Checkpoint task shutting down, saving final checkpoint");
+                        save_checkpoint!();
                         break;
                     }
                 }
@@ -292,9 +358,10 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     info!("Starting fiber processor task");
     let processor_storage = storage.clone();
     let processor_config = config.clone();
-    let processor_handle = tokio::spawn(async move {
-        run_processor(seq_rx, fiber_tx, fiber_processor, processor_storage, &processor_config, config_version).await
-    });
+    let processor_shared_state = shared_fiber_state.clone();
+    let mut processor_handle = Some(tokio::spawn(async move {
+        run_processor(seq_rx, fiber_tx, fiber_processor, processor_storage, &processor_config, config_version, processor_shared_state).await
+    }));
 
     // Start storage writer task
     info!("Starting storage writer task");
@@ -344,6 +411,15 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     tokio::select! {
         _ = signal::ctrl_c() => {
             info!("Shutdown signal received");
+
+            // Trigger immediate checkpoint save before shutdown
+            if config.pipeline.checkpoint.enabled {
+                info!("Triggering checkpoint save before shutdown");
+                let _ = checkpoint_save_tx.send(()).await;
+                // Give checkpoint task time to save
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
             let _ = shutdown_tx.send(true);
 
             // Signal the sequencer wait task to abort
@@ -359,12 +435,40 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         } => {
             match result {
                 Ok(Ok(Ok(()))) => {
-                    info!("Log ingestion complete. Web server continues running. Press Ctrl+C to shutdown.");
+                    info!("Log ingestion complete. Waiting for fiber processor to finish.");
+
+                    // Wait for fiber processor to complete before saving checkpoint.
+                    // This ensures the checkpoint reflects the final state after all logs are processed.
+                    if let Some(handle) = processor_handle.take() {
+                        match handle.await {
+                            Ok(Ok(())) => info!("Fiber processor completed successfully"),
+                            Ok(Err(e)) => error!(error = %e, "Fiber processor error"),
+                            Err(e) => error!(error = %e, "Fiber processor join error"),
+                        }
+                    }
+
+                    // Now trigger checkpoint save - fiber processor has updated shared state
+                    if config.pipeline.checkpoint.enabled {
+                        info!("Triggering checkpoint save after fiber processor completion");
+                        let _ = checkpoint_save_tx.send(()).await;
+                        // Give checkpoint task time to save
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+
+                    info!("Web server continues running. Press Ctrl+C to shutdown.");
                     // Don't send shutdown signal - let web server continue running
                     // Wait for Ctrl+C
                     match signal::ctrl_c().await {
                         Ok(()) => {
                             info!("Shutdown signal received");
+
+                            // Trigger checkpoint save before final shutdown
+                            if config.pipeline.checkpoint.enabled {
+                                info!("Triggering final checkpoint save");
+                                let _ = checkpoint_save_tx.send(()).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+
                             let _ = shutdown_tx.send(true);
                         }
                         Err(e) => {
@@ -399,11 +503,13 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         }
     }
 
-    // Wait for processor
-    match processor_handle.await {
-        Ok(Ok(())) => info!("Processor task completed successfully"),
-        Ok(Err(e)) => error!(error = %e, "Processor task error"),
-        Err(e) => error!(error = %e, "Processor task join error"),
+    // Wait for processor (if not already awaited during sequencer completion)
+    if let Some(handle) = processor_handle {
+        match handle.await {
+            Ok(Ok(())) => info!("Processor task completed successfully"),
+            Ok(Err(e)) => error!(error = %e, "Processor task error"),
+            Err(e) => error!(error = %e, "Processor task join error"),
+        }
     }
 
     // Wait for writer

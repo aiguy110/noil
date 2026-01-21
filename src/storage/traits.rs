@@ -3,6 +3,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::storage::checkpoint::Checkpoint;
+
 /// Stored log record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredLog {
@@ -94,6 +96,21 @@ pub trait Storage: Send + Sync {
 
     /// Get all unique source IDs
     async fn get_all_source_ids(&self) -> Result<Vec<String>, StorageError>;
+
+    // Checkpoints
+    /// Load the latest checkpoint from storage
+    async fn load_checkpoint(&self) -> Result<Option<Checkpoint>, StorageError>;
+
+    /// Save a checkpoint to storage
+    async fn save_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), StorageError>;
+
+    /// Close orphaned fibers - fibers that are open in storage but not in the checkpoint.
+    /// This prevents duplicate fibers after a crash where fibers were written to storage
+    /// but didn't make it into the checkpoint before the crash.
+    ///
+    /// Takes a set of fiber IDs that should remain open (from checkpoint).
+    /// All other fibers with closed=false will be marked as closed.
+    async fn close_orphaned_fibers(&self, checkpointed_fiber_ids: &std::collections::HashSet<Uuid>) -> Result<usize, StorageError>;
 }
 
 /// Storage errors
@@ -110,4 +127,7 @@ pub enum StorageError {
 
     #[error("DuckDB error: {0}")]
     DuckDb(#[from] duckdb::Error),
+
+    #[error("checkpoint error: {0}")]
+    Checkpoint(String),
 }

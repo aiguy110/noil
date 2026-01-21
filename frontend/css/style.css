@@ -81,8 +81,13 @@ body {
     background-color: var(--bg-tertiary);
 }
 
+.drawer.collapsed .drawer-toggle .icon {
+    font-size: 0;
+}
+
 .drawer.collapsed .drawer-toggle .icon::before {
     content: '▶';
+    font-size: 18px;
 }
 
 .drawer-content {
@@ -337,6 +342,24 @@ body {
     position: absolute;
     font-size: 10px;
     color: var(--text-secondary);
+}
+
+/* Timeline Resize Handle */
+.timeline-resize-handle {
+    height: 5px;
+    background-color: var(--border-color);
+    cursor: ns-resize;
+    position: relative;
+    z-index: 10;
+    transition: background-color 0.2s;
+}
+
+.timeline-resize-handle:hover {
+    background-color: var(--accent-color);
+}
+
+.timeline-resize-handle.dragging {
+    background-color: var(--accent-color);
 }
 
 /* Log Viewer Section */

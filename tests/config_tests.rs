@@ -13,14 +13,20 @@ fn test_generated_config_is_valid() {
     let config = load_config(&config_path).expect("Generated config should be valid");
 
     assert_eq!(config.sources.len(), 5);
-    assert_eq!(config.fiber_types.len(), 3);
+    // 2 explicit fiber types + 5 auto-generated source fibers (one per source)
+    assert_eq!(config.fiber_types.len(), 7);
     assert!(config.sources.contains_key("nginx_access"));
     assert!(config.sources.contains_key("program1"));
     assert!(config.sources.contains_key("program2"));
     assert!(config.sources.contains_key("simple_service"));
     assert!(config.fiber_types.contains_key("request_trace"));
     assert!(config.fiber_types.contains_key("simple_log"));
-    assert!(config.fiber_types.contains_key("nginx_all"));
+    // Check for auto-generated source fibers
+    assert!(config.fiber_types.contains_key("nginx_access_all"));
+    assert!(config.fiber_types.contains_key("application_log_all"));
+    assert!(config.fiber_types.contains_key("program1_all"));
+    assert!(config.fiber_types.contains_key("program2_all"));
+    assert!(config.fiber_types.contains_key("simple_service_all"));
 }
 
 #[test]
@@ -60,7 +66,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -122,7 +127,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -183,7 +187,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -246,7 +249,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -313,7 +315,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -378,7 +379,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -442,7 +442,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -526,7 +525,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -612,7 +610,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: /tmp/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -632,7 +629,8 @@ web:
     let config = load_config(&config_path).expect("Config should be valid");
 
     assert_eq!(config.sources.len(), 1);
-    assert_eq!(config.fiber_types.len(), 1);
+    // 1 explicit fiber type + 1 auto-generated source fiber
+    assert_eq!(config.fiber_types.len(), 2);
 
     let fiber = &config.fiber_types["test_fiber"];
     assert_eq!(fiber.description, Some("Test fiber type".to_string()));
@@ -685,7 +683,6 @@ pipeline:
   checkpoint:
     enabled: true
     interval_seconds: 30
-    path: ~/checkpoint.json
 
 sequencer:
   batch_epoch_duration: 10s
@@ -707,17 +704,12 @@ web:
     // Verify that paths were expanded
     if let Some(home) = dirs::home_dir() {
         let expected_source_path = home.join("test.log");
-        let expected_checkpoint_path = home.join("checkpoint.json");
         let expected_storage_path = home.join("test.duckdb");
 
         assert_eq!(
             config.sources["test_source"].path,
             expected_source_path,
             "Source path should have tilde expanded"
-        );
-        assert_eq!(
-            config.pipeline.checkpoint.path, expected_checkpoint_path,
-            "Checkpoint path should have tilde expanded"
         );
         assert_eq!(
             config.storage.path, expected_storage_path,
@@ -729,12 +721,232 @@ web:
             .path
             .to_string_lossy()
             .starts_with('~'));
-        assert!(!config
-            .pipeline
-            .checkpoint
-            .path
-            .to_string_lossy()
-            .starts_with('~'));
         assert!(!config.storage.path.to_string_lossy().starts_with('~'));
     }
+}
+
+#[test]
+fn test_auto_source_fibers_enabled() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    let config_yaml = r#"
+sources:
+  source1:
+    type: file
+    path: /tmp/test1.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+  source2:
+    type: file
+    path: /tmp/test2.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  custom_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      source1:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:8080
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Verify auto_source_fibers defaults to true
+    assert!(config.auto_source_fibers);
+
+    // 1 explicit fiber type + 2 auto-generated source fibers
+    assert_eq!(config.fiber_types.len(), 3);
+    assert!(config.fiber_types.contains_key("custom_fiber"));
+    assert!(config.fiber_types.contains_key("source1_all"));
+    assert!(config.fiber_types.contains_key("source2_all"));
+
+    // Verify auto-generated fiber has correct properties
+    let source1_fiber = &config.fiber_types["source1_all"];
+    assert_eq!(
+        source1_fiber.description,
+        Some("Auto-generated fiber containing all logs from source1".to_string())
+    );
+    assert_eq!(source1_fiber.temporal.max_gap, None); // infinite
+    assert_eq!(source1_fiber.attributes.len(), 1);
+    assert_eq!(source1_fiber.attributes[0].name, "source_marker");
+    assert!(source1_fiber.attributes[0].key);
+    assert_eq!(
+        source1_fiber.attributes[0].derived,
+        Some("source1".to_string())
+    );
+}
+
+#[test]
+fn test_auto_source_fibers_disabled() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    let config_yaml = r#"
+sources:
+  source1:
+    type: file
+    path: /tmp/test1.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+auto_source_fibers: false
+
+fiber_types:
+  custom_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      source1:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:8080
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Verify auto_source_fibers is disabled
+    assert!(!config.auto_source_fibers);
+
+    // Only the explicitly defined fiber type should exist
+    assert_eq!(config.fiber_types.len(), 1);
+    assert!(config.fiber_types.contains_key("custom_fiber"));
+    assert!(!config.fiber_types.contains_key("source1_all"));
+}
+
+#[test]
+fn test_auto_source_fibers_can_be_overridden() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    let config_yaml = r#"
+sources:
+  source1:
+    type: file
+    path: /tmp/test1.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  source1_all:
+    description: "Custom override of auto-generated fiber"
+    temporal:
+      max_gap: 10s
+    attributes:
+      - name: custom_attr
+        type: string
+        key: true
+    sources:
+      source1:
+        patterns:
+          - regex: 'custom_pattern'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:8080
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Should have only the manually defined fiber type (not auto-generated)
+    assert_eq!(config.fiber_types.len(), 1);
+    assert!(config.fiber_types.contains_key("source1_all"));
+
+    // Verify it uses the custom definition, not auto-generated
+    let fiber = &config.fiber_types["source1_all"];
+    assert_eq!(
+        fiber.description,
+        Some("Custom override of auto-generated fiber".to_string())
+    );
+    assert_eq!(fiber.attributes[0].name, "custom_attr");
 }

@@ -1,3 +1,4 @@
+use super::checkpoint::Checkpoint;
 use super::traits::{FiberMembership, FiberRecord, Storage, StorageError, StoredLog};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -184,6 +185,17 @@ impl Storage for DuckDbStorage {
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memberships_fiber ON fiber_memberships(fiber_id)",
+                [],
+            )?;
+
+            // Create checkpoints table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    checkpoint_data TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    CHECK (id = 1)
+                )",
                 [],
             )?;
 
@@ -658,6 +670,98 @@ impl Storage for DuckDbStorage {
                 sources.push(row?);
             }
             Ok(sources)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn load_checkpoint(&self) -> Result<Option<Checkpoint>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT checkpoint_data FROM checkpoints WHERE id = 1",
+            )?;
+
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let checkpoint_json: String = row.get(0)?;
+                let checkpoint: Checkpoint = serde_json::from_str(&checkpoint_json)
+                    .map_err(|e| StorageError::Checkpoint(format!("Failed to deserialize checkpoint: {}", e)))?;
+                Ok(Some(checkpoint))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn save_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let checkpoint = checkpoint.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let checkpoint_json = serde_json::to_string(&checkpoint)
+                .map_err(|e| StorageError::Checkpoint(format!("Failed to serialize checkpoint: {}", e)))?;
+
+            let now = Utc::now();
+
+            conn.execute(
+                "INSERT OR REPLACE INTO checkpoints (id, checkpoint_data, created_at)
+                 VALUES (1, ?, to_timestamp(? / 1000000.0))",
+                duckdb::params![checkpoint_json, now.timestamp_micros()],
+            )?;
+
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn close_orphaned_fibers(&self, checkpointed_fiber_ids: &std::collections::HashSet<Uuid>) -> Result<usize, StorageError> {
+        let conn = self.conn.clone();
+        let checkpointed_ids = checkpointed_fiber_ids.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Query all open fibers
+            let mut stmt = conn.prepare(
+                "SELECT fiber_id FROM fibers WHERE closed = FALSE"
+            )?;
+
+            let mut rows = stmt.query([])?;
+            let mut open_fiber_ids = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let fiber_id_str: String = row.get(0)?;
+                if let Ok(fiber_id) = Uuid::parse_str(&fiber_id_str) {
+                    open_fiber_ids.push(fiber_id);
+                }
+            }
+
+            // Drop the statement to release the borrow on conn
+            drop(rows);
+            drop(stmt);
+
+            // Find orphaned fibers (open in storage but not in checkpoint)
+            let mut closed_count = 0;
+            for fiber_id in open_fiber_ids {
+                if !checkpointed_ids.contains(&fiber_id) {
+                    // This fiber is orphaned - close it
+                    conn.execute(
+                        "UPDATE fibers SET closed = TRUE WHERE fiber_id = ?",
+                        duckdb::params![fiber_id.to_string()],
+                    )?;
+                    closed_count += 1;
+                }
+            }
+
+            Ok::<usize, StorageError>(closed_count)
         })
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?

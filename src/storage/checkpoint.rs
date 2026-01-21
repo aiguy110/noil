@@ -1,7 +1,8 @@
+use super::traits::{Storage, StorageError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -10,11 +11,8 @@ const CURRENT_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckpointError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Serialization error: {0}")]
-    Serde(#[from] serde_json::Error),
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
 
     #[error("Invalid checkpoint version: {0}")]
     InvalidVersion(u32),
@@ -33,6 +31,9 @@ pub struct SourceCheckpointState {
 
 /// Shared reference to source checkpoint state
 pub type SharedSourceState = Arc<Mutex<SourceCheckpointState>>;
+
+/// Shared reference to fiber processor checkpoint state
+pub type SharedFiberProcessorState = Arc<Mutex<HashMap<String, FiberProcessorCheckpoint>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -74,62 +75,51 @@ pub struct OpenFiberCheckpoint {
 }
 
 pub struct CheckpointManager {
-    path: PathBuf,
+    storage: Arc<dyn Storage>,
     interval: Duration,
     last_save: Instant,
 }
 
 impl CheckpointManager {
-    pub fn new(path: impl AsRef<Path>, interval: Duration) -> Self {
+    pub fn new(storage: Arc<dyn Storage>, interval: Duration) -> Self {
         Self {
-            path: path.as_ref().to_path_buf(),
+            storage,
             interval,
             last_save: Instant::now(),
         }
     }
 
-    pub fn load(&self) -> Result<Option<Checkpoint>> {
-        if !self.path.exists() {
-            tracing::info!("No checkpoint file found at {:?}", self.path);
-            return Ok(None);
-        }
+    pub async fn load(&self) -> Result<Option<Checkpoint>> {
+        tracing::info!("Loading checkpoint from storage");
 
-        tracing::info!("Loading checkpoint from {:?}", self.path);
-        let json = std::fs::read_to_string(&self.path)?;
-        let checkpoint: Checkpoint = serde_json::from_str(&json)?;
+        let checkpoint_opt = self.storage.load_checkpoint().await?;
 
-        if checkpoint.version != CURRENT_VERSION {
-            tracing::warn!(
-                "Checkpoint version mismatch: {} vs {}, ignoring checkpoint",
-                checkpoint.version,
-                CURRENT_VERSION
+        if let Some(checkpoint) = checkpoint_opt {
+            if checkpoint.version != CURRENT_VERSION {
+                tracing::warn!(
+                    "Checkpoint version mismatch: {} vs {}, ignoring checkpoint",
+                    checkpoint.version,
+                    CURRENT_VERSION
+                );
+                return Ok(None);
+            }
+
+            tracing::info!(
+                "Loaded checkpoint from {} with config version {}",
+                checkpoint.timestamp,
+                checkpoint.config_version
             );
-            return Ok(None);
+            Ok(Some(checkpoint))
+        } else {
+            tracing::info!("No checkpoint found in storage");
+            Ok(None)
         }
-
-        tracing::info!(
-            "Loaded checkpoint from {} with config version {}",
-            checkpoint.timestamp,
-            checkpoint.config_version
-        );
-        Ok(Some(checkpoint))
     }
 
-    pub fn save(&mut self, checkpoint: &Checkpoint) -> Result<()> {
-        let json = serde_json::to_string_pretty(checkpoint)?;
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Write to temp file first for atomic write
-        let temp_path = self.path.with_extension("tmp");
-        std::fs::write(&temp_path, &json)?;
-        std::fs::rename(&temp_path, &self.path)?;
-
+    pub async fn save(&mut self, checkpoint: &Checkpoint) -> Result<()> {
+        self.storage.save_checkpoint(checkpoint).await?;
         self.last_save = Instant::now();
-        tracing::debug!("Checkpoint saved to {:?}", self.path);
+        tracing::debug!("Checkpoint saved to storage");
         Ok(())
     }
 
@@ -145,14 +135,18 @@ impl CheckpointManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    use crate::storage::duckdb::DuckDbStorage;
 
-    #[test]
-    fn test_checkpoint_save_load() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("checkpoint.json");
+    async fn setup_storage() -> Arc<dyn Storage> {
+        let storage = DuckDbStorage::in_memory().unwrap();
+        storage.init_schema().await.unwrap();
+        Arc::new(storage) as Arc<dyn Storage>
+    }
 
-        let mut manager = CheckpointManager::new(&checkpoint_path, Duration::from_secs(30));
+    #[tokio::test]
+    async fn test_checkpoint_save_load() {
+        let storage = setup_storage().await;
+        let mut manager = CheckpointManager::new(storage.clone(), Duration::from_secs(30));
 
         let checkpoint = Checkpoint {
             version: CURRENT_VERSION,
@@ -165,29 +159,26 @@ mod tests {
             fiber_processors: HashMap::new(),
         };
 
-        manager.save(&checkpoint).unwrap();
+        manager.save(&checkpoint).await.unwrap();
 
-        let loaded = manager.load().unwrap();
+        let loaded = manager.load().await.unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.version, CURRENT_VERSION);
         assert_eq!(loaded.config_version, 1);
     }
 
-    #[test]
-    fn test_checkpoint_no_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("nonexistent.json");
-
-        let manager = CheckpointManager::new(&checkpoint_path, Duration::from_secs(30));
-        let loaded = manager.load().unwrap();
+    #[tokio::test]
+    async fn test_checkpoint_no_checkpoint() {
+        let storage = setup_storage().await;
+        let manager = CheckpointManager::new(storage, Duration::from_secs(30));
+        let loaded = manager.load().await.unwrap();
         assert!(loaded.is_none());
     }
 
-    #[test]
-    fn test_checkpoint_version_mismatch() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("checkpoint.json");
+    #[tokio::test]
+    async fn test_checkpoint_version_mismatch() {
+        let storage = setup_storage().await;
 
         let checkpoint = Checkpoint {
             version: 999,
@@ -200,24 +191,22 @@ mod tests {
             fiber_processors: HashMap::new(),
         };
 
-        let json = serde_json::to_string_pretty(&checkpoint).unwrap();
-        std::fs::write(&checkpoint_path, json).unwrap();
+        // Save directly to storage to bypass CheckpointManager version check
+        storage.save_checkpoint(&checkpoint).await.unwrap();
 
-        let manager = CheckpointManager::new(&checkpoint_path, Duration::from_secs(30));
-        let loaded = manager.load().unwrap();
+        let manager = CheckpointManager::new(storage, Duration::from_secs(30));
+        let loaded = manager.load().await.unwrap();
         assert!(loaded.is_none());
     }
 
-    #[test]
-    fn test_checkpoint_should_save() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("checkpoint.json");
-
-        let mut manager = CheckpointManager::new(&checkpoint_path, Duration::from_millis(100));
+    #[tokio::test]
+    async fn test_checkpoint_should_save() {
+        let storage = setup_storage().await;
+        let mut manager = CheckpointManager::new(storage, Duration::from_millis(100));
 
         assert!(!manager.should_save());
 
-        std::thread::sleep(Duration::from_millis(150));
+        tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(manager.should_save());
 
         let checkpoint = Checkpoint {
@@ -231,35 +220,46 @@ mod tests {
             fiber_processors: HashMap::new(),
         };
 
-        manager.save(&checkpoint).unwrap();
+        manager.save(&checkpoint).await.unwrap();
         assert!(!manager.should_save());
     }
 
-    #[test]
-    fn test_checkpoint_atomic_write() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("checkpoint.json");
+    #[tokio::test]
+    async fn test_checkpoint_round_trip() {
+        let storage = setup_storage().await;
+        let mut manager = CheckpointManager::new(storage.clone(), Duration::from_secs(30));
 
-        let mut manager = CheckpointManager::new(&checkpoint_path, Duration::from_secs(30));
+        // Create a more complex checkpoint with data
+        let mut sources = HashMap::new();
+        sources.insert(
+            "source1".to_string(),
+            SourceCheckpoint {
+                path: PathBuf::from("/var/log/test.log"),
+                offset: 12345,
+                inode: 67890,
+                last_timestamp: Some(Utc::now()),
+            },
+        );
 
         let checkpoint = Checkpoint {
             version: CURRENT_VERSION,
             timestamp: Utc::now(),
-            config_version: 1,
-            sources: HashMap::new(),
+            config_version: 42,
+            sources,
             sequencer: SequencerCheckpoint {
-                watermarks: HashMap::new(),
+                watermarks: HashMap::from([("source1".to_string(), Utc::now())]),
             },
             fiber_processors: HashMap::new(),
         };
 
-        manager.save(&checkpoint).unwrap();
+        manager.save(&checkpoint).await.unwrap();
 
-        // Verify temp file is cleaned up
-        let temp_path = checkpoint_path.with_extension("tmp");
-        assert!(!temp_path.exists());
-
-        // Verify checkpoint file exists
-        assert!(checkpoint_path.exists());
+        let loaded = manager.load().await.unwrap();
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.version, CURRENT_VERSION);
+        assert_eq!(loaded.config_version, 42);
+        assert_eq!(loaded.sources.len(), 1);
+        assert_eq!(loaded.sources.get("source1").unwrap().offset, 12345);
     }
 }

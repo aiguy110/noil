@@ -275,9 +275,9 @@ pipeline:
     # What to do on unparseable lines: 'drop' or 'panic'
     on_parse_error: drop
   checkpoint:
+    # Checkpoints are stored in the DuckDB database (no separate file)
     enabled: true
     interval_seconds: 30
-    path: /var/lib/noil/checkpoint.json
 
 # =============================================================================
 # SEQUENCER SETTINGS
@@ -487,7 +487,6 @@ Use:
 
 **Path handling**: All path parameters in the config file support tilde expansion (`~` expands to the home directory). This applies to:
 - Source file paths
-- Checkpoint path
 - Storage database path
 - `--config` CLI argument
 
@@ -499,7 +498,7 @@ Checkpoint state includes:
 - Sequencer: watermark, sequence counter
 - Fiber processor: active fiber state (for crash recovery)
 
-Checkpoints written periodically to configured path.
+Checkpoints are stored in the DuckDB database and written periodically based on the configured interval.
 
 ## UI Requirements (Future)
 

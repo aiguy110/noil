@@ -7,10 +7,16 @@ use std::time::Duration;
 pub struct Config {
     pub sources: HashMap<String, SourceConfig>,
     pub fiber_types: HashMap<String, FiberTypeConfig>,
+    #[serde(default = "default_auto_source_fibers")]
+    pub auto_source_fibers: bool,
     pub pipeline: PipelineConfig,
     pub sequencer: SequencerConfig,
     pub storage: StorageConfig,
     pub web: WebConfig,
+}
+
+fn default_auto_source_fibers() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,7 +162,6 @@ pub enum ParseErrorStrategy {
 pub struct CheckpointConfig {
     pub enabled: bool,
     pub interval_seconds: u64,
-    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -97,6 +97,9 @@ impl SourceReader {
         let mut reader = Self::new(source_id, config, parse_error_strategy)?;
         reader.current_offset = offset;
         reader.last_emitted_offset = offset;
+        // Override read_config.start to use the restored offset instead of the config value.
+        // This ensures open() seeks to the checkpoint offset rather than beginning/end.
+        reader.read_config.start = crate::config::types::ReadStart::StoredOffset;
         Ok(reader)
     }
 
@@ -130,6 +133,11 @@ impl SourceReader {
 
         self.file = Some(buf_reader);
         self.eof_reached = false;
+
+        // Update shared state with the file inode so checkpoints capture it
+        // even if no records are emitted (e.g., when resuming at EOF)
+        self.update_shared_state();
+
         Ok(())
     }
 
