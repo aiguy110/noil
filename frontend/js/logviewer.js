@@ -11,6 +11,7 @@ class LogViewer {
         this.offset = 0;
         this.limit = 100;
         this.hasMore = false;
+        this.onLogSelect = null;  // Callback function for log selection
     }
 
     async loadFiber(fiberId) {
@@ -114,6 +115,7 @@ class LogViewer {
     createLogLine(log) {
         const line = document.createElement('div');
         line.className = 'log-line';
+        line.setAttribute('data-log-id', log.id);
 
         // Apply source color as background
         const sourceColor = colorManager.getSourceColor(log.source_id);
@@ -142,6 +144,13 @@ class LogViewer {
 
         // Add tooltip with full info
         line.title = `ID: ${log.id}\nSource: ${log.source_id}\nTime: ${timestamp.toLocaleString()}`;
+
+        // Add click handler for log selection
+        line.addEventListener('click', () => {
+            if (this.onLogSelect) {
+                this.onLogSelect(log.id);
+            }
+        });
 
         return line;
     }
@@ -184,5 +193,23 @@ class LogViewer {
                 <div class="empty-state-text">${message}</div>
             </div>
         `;
+    }
+
+    highlightLog(logId) {
+        // Remove existing highlight
+        const allLogLines = this.container.querySelectorAll('.log-line.selected');
+        allLogLines.forEach(el => {
+            el.classList.remove('selected');
+        });
+
+        // Add highlight to selected log if logId is provided
+        if (logId) {
+            const logEl = this.container.querySelector(`[data-log-id="${logId}"]`);
+            if (logEl) {
+                logEl.classList.add('selected');
+                // Scroll the log into view
+                logEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
     }
 }

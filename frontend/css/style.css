@@ -502,3 +502,98 @@ body {
 .empty-state-text {
     font-size: 14px;
 }
+
+/* Navigation Tab */
+.nav-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.nav-btn {
+    flex: 1;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: background-color 0.2s;
+}
+
+.nav-btn:hover:not(:disabled) {
+    background-color: var(--border-color);
+}
+
+.nav-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.nav-section {
+    margin-bottom: 20px;
+}
+
+.nav-section h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.nav-item {
+    padding: 8px;
+    background-color: var(--bg-tertiary);
+    border-left: 3px solid var(--accent-color);
+    cursor: pointer;
+    font-size: 12px;
+    border-radius: 2px;
+    transition: background-color 0.2s;
+}
+
+.nav-item.current {
+    background-color: var(--accent-color);
+    opacity: 0.3;
+}
+
+.nav-item:hover {
+    background-color: var(--border-color);
+}
+
+.nav-item-type {
+    font-weight: bold;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.nav-item-id {
+    color: var(--text-secondary);
+    font-family: monospace;
+    font-size: 10px;
+}
+
+.empty-message {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 12px;
+    padding: 8px;
+}
+
+/* Log Line Selection */
+.log-line {
+    cursor: pointer;
+}
+
+.log-line.selected {
+    background-color: var(--accent-color) !important;
+    opacity: 0.3;
+    border-left-color: var(--text-primary);
+    border-left-width: 5px;
+}

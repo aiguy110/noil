@@ -13,6 +13,12 @@ class NoilApp {
         this.allFibers = [];
         this.filteredFibers = [];
 
+        // Navigation state
+        this.navHistory = [];           // [{fiberId, logId}]
+        this.navHistoryPosition = -1;   // Current position in history
+        this.selectedLogId = null;      // Currently selected log line
+        this.logFibersCache = {};       // Map: logId -> fiber list
+
         this.init();
     }
 
@@ -24,6 +30,7 @@ class NoilApp {
         this.initLogViewer();
         this.initColorConfig();
         this.initFilters();
+        this.initNavigationTab();
 
         // Load initial data
         await this.loadData();
@@ -226,6 +233,238 @@ class NoilApp {
         });
     }
 
+    initNavigationTab() {
+        // Back button
+        document.getElementById('nav-back').addEventListener('click', () => {
+            this.navigateBack();
+        });
+
+        // Forward button
+        document.getElementById('nav-forward').addEventListener('click', () => {
+            this.navigateForward();
+        });
+
+        // Clear selection button
+        document.getElementById('nav-clear-selection').addEventListener('click', () => {
+            this.clearLogSelection();
+        });
+
+        // Set up log selection callback
+        this.logViewer.onLogSelect = (logId) => {
+            this.selectLogLine(logId);
+        };
+    }
+
+    pushNavHistory(fiberId, logId = null) {
+        // If we're not at the end of history, truncate forward entries
+        if (this.navHistoryPosition < this.navHistory.length - 1) {
+            this.navHistory = this.navHistory.slice(0, this.navHistoryPosition + 1);
+        }
+
+        // Push new entry
+        this.navHistory.push({ fiberId, logId });
+        this.navHistoryPosition = this.navHistory.length - 1;
+
+        this.updateNavigationUI();
+    }
+
+    navigateBack() {
+        if (this.navHistoryPosition > 0) {
+            this.navHistoryPosition--;
+            const entry = this.navHistory[this.navHistoryPosition];
+
+            // Update timeline selection without triggering callback
+            this.timeline.selectedFiberId = entry.fiberId;
+            this.timeline.render();
+
+            // Load fiber logs
+            this.logViewer.loadFiber(entry.fiberId);
+
+            // Restore log selection if any
+            if (entry.logId) {
+                this.selectedLogId = entry.logId;
+                this.logViewer.highlightLog(entry.logId);
+                this.filterTimelineByLog(entry.logId);
+            } else {
+                this.clearLogSelection();
+            }
+
+            this.updateNavigationUI();
+        }
+    }
+
+    navigateForward() {
+        if (this.navHistoryPosition < this.navHistory.length - 1) {
+            this.navHistoryPosition++;
+            const entry = this.navHistory[this.navHistoryPosition];
+
+            // Update timeline selection without triggering callback
+            this.timeline.selectedFiberId = entry.fiberId;
+            this.timeline.render();
+
+            // Load fiber logs
+            this.logViewer.loadFiber(entry.fiberId);
+
+            // Restore log selection if any
+            if (entry.logId) {
+                this.selectedLogId = entry.logId;
+                this.logViewer.highlightLog(entry.logId);
+                this.filterTimelineByLog(entry.logId);
+            } else {
+                this.clearLogSelection();
+            }
+
+            this.updateNavigationUI();
+        }
+    }
+
+    async selectLogLine(logId) {
+        this.selectedLogId = logId;
+
+        // Fetch fibers containing this log
+        try {
+            const data = await api.getLogFibers(logId);
+            this.logFibersCache[logId] = data.fibers;
+
+            // Filter timeline to only show these fibers
+            this.filterTimelineByLog(logId);
+
+            // Update navigation tab UI
+            this.updateOtherFibersList(data.fibers);
+
+            // Highlight the log
+            this.logViewer.highlightLog(logId);
+
+            // Show clear selection button
+            document.getElementById('nav-clear-selection').style.display = 'block';
+            document.getElementById('nav-other-fibers-section').style.display = 'block';
+
+        } catch (error) {
+            console.error('Failed to fetch fibers for log:', error);
+        }
+    }
+
+    filterTimelineByLog(logId) {
+        const fiberIds = this.logFibersCache[logId]?.map(f => f.id) || [];
+        const filteredFibers = this.allFibers.filter(f => fiberIds.includes(f.id));
+        this.timeline.setFibers(filteredFibers);
+    }
+
+    clearLogSelection() {
+        this.selectedLogId = null;
+        this.logViewer.highlightLog(null);
+
+        // Restore full filtered timeline
+        this.timeline.setFibers(this.filteredFibers);
+
+        // Hide UI elements
+        document.getElementById('nav-clear-selection').style.display = 'none';
+        document.getElementById('nav-other-fibers-section').style.display = 'none';
+    }
+
+    updateNavigationUI() {
+        // Update back/forward button states
+        document.getElementById('nav-back').disabled = this.navHistoryPosition <= 0;
+        document.getElementById('nav-forward').disabled =
+            this.navHistoryPosition >= this.navHistory.length - 1;
+
+        // Render history list
+        this.renderHistoryList();
+    }
+
+    renderHistoryList() {
+        const container = document.getElementById('nav-history-list');
+
+        if (this.navHistory.length === 0) {
+            container.innerHTML = '<p class="empty-message">No navigation history</p>';
+            return;
+        }
+
+        container.innerHTML = '';
+
+        this.navHistory.forEach((entry, index) => {
+            const fiber = this.allFibers.find(f => f.id === entry.fiberId);
+            if (!fiber) return;
+
+            const item = document.createElement('div');
+            item.className = 'nav-item';
+            if (index === this.navHistoryPosition) {
+                item.classList.add('current');
+            }
+
+            item.innerHTML = `
+                <div class="nav-item-type">${fiber.fiber_type}</div>
+                <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
+            `;
+
+            item.addEventListener('click', () => {
+                this.navHistoryPosition = index;
+                const historyEntry = this.navHistory[index];
+
+                // Update timeline selection without triggering callback
+                this.timeline.selectedFiberId = historyEntry.fiberId;
+                this.timeline.render();
+
+                // Load fiber logs
+                this.logViewer.loadFiber(historyEntry.fiberId);
+
+                if (historyEntry.logId) {
+                    this.selectedLogId = historyEntry.logId;
+                    this.logViewer.highlightLog(historyEntry.logId);
+                    this.filterTimelineByLog(historyEntry.logId);
+                } else {
+                    this.clearLogSelection();
+                }
+
+                this.updateNavigationUI();
+            });
+
+            container.appendChild(item);
+        });
+    }
+
+    updateOtherFibersList(fibers) {
+        const container = document.getElementById('nav-other-fibers-list');
+        const currentFiberId = this.timeline.selectedFiberId;
+
+        // Filter out current fiber
+        const otherFibers = fibers.filter(f => f.id !== currentFiberId);
+
+        if (otherFibers.length === 0) {
+            container.innerHTML = '<p class="empty-message">No other fibers</p>';
+            return;
+        }
+
+        container.innerHTML = '';
+
+        otherFibers.forEach(fiber => {
+            const item = document.createElement('div');
+            item.className = 'nav-item';
+
+            const color = colorManager.getFiberTypeColor(fiber.fiber_type);
+            item.style.borderLeftColor = color;
+
+            item.innerHTML = `
+                <div class="nav-item-type">${fiber.fiber_type}</div>
+                <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
+            `;
+
+            item.addEventListener('click', () => {
+                // Push to history with current log selection
+                this.pushNavHistory(fiber.id, this.selectedLogId);
+
+                // Update timeline selection without triggering callback
+                this.timeline.selectedFiberId = fiber.id;
+                this.timeline.render();
+
+                // Load fiber logs
+                this.logViewer.loadFiber(fiber.id);
+            });
+
+            container.appendChild(item);
+        });
+    }
+
     applyFilters() {
         // Get filter values
         this.filters.showClosed = document.getElementById('filter-closed').checked;
@@ -315,6 +554,22 @@ class NoilApp {
     }
 
     async onFiberSelected(fiberId) {
+        // Skip if selecting the same fiber
+        if (this.navHistory[this.navHistoryPosition]?.fiberId === fiberId) {
+            await this.logViewer.loadFiber(fiberId);
+            return;
+        }
+
+        if (this.selectedLogId) {
+            // If a log is selected, add to navigation history (building a path)
+            this.pushNavHistory(fiberId, this.selectedLogId);
+        } else {
+            // If no log is selected, replace history with new root
+            this.navHistory = [{ fiberId, logId: null }];
+            this.navHistoryPosition = 0;
+            this.updateNavigationUI();
+        }
+
         await this.logViewer.loadFiber(fiberId);
     }
 

@@ -20,6 +20,7 @@
                 <div class="tabs">
                     <button class="tab-btn active" data-tab="filters">Filters</button>
                     <button class="tab-btn" data-tab="colors">Colors</button>
+                    <button class="tab-btn" data-tab="navigation">Navigation</button>
                 </div>
 
                 <!-- Filters Tab -->
@@ -69,6 +70,29 @@
                     </div>
 
                     <button id="reset-colors" class="btn btn-secondary">Reset to Defaults</button>
+                </div>
+
+                <!-- Navigation Tab -->
+                <div id="tab-navigation" class="tab-content">
+                    <div class="nav-controls">
+                        <button id="nav-back" class="nav-btn" disabled>← Back</button>
+                        <button id="nav-forward" class="nav-btn" disabled>Forward →</button>
+                        <button id="nav-clear-selection" class="nav-btn" style="display:none">Clear Selection</button>
+                    </div>
+
+                    <div class="nav-section">
+                        <h3>History</h3>
+                        <div id="nav-history-list" class="nav-list">
+                            <p class="empty-message">No navigation history</p>
+                        </div>
+                    </div>
+
+                    <div class="nav-section" id="nav-other-fibers-section" style="display:none">
+                        <h3>Other Fibers with Selected Log</h3>
+                        <div id="nav-other-fibers-list" class="nav-list">
+                            <!-- Populated when log is selected -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </aside>
