@@ -29,11 +29,129 @@ body {
     color: var(--text-primary);
     overflow: hidden;
     height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header Banner */
+.header-banner {
+    height: var(--header-height);
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 200;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.header-logo-link {
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    transition: opacity 0.2s;
+}
+
+.header-logo-link:hover {
+    opacity: 0.8;
+}
+
+.header-logo {
+    height: 32px;
+    width: 32px;
+}
+
+.header-title {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.header-title-main {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.header-title-version {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+}
+
+/* Hamburger Menu */
+.hamburger-menu {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.hamburger-menu:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.hamburger-line {
+    width: 24px;
+    height: 2px;
+    background-color: var(--text-primary);
+    transition: all 0.3s;
+}
+
+.hamburger-dropdown {
+    position: absolute;
+    top: calc(var(--header-height) - 1px);
+    right: 20px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 199;
+    min-width: 200px;
+}
+
+.menu-item {
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    padding: 12px 16px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.menu-item:last-child {
+    border-bottom: none;
+}
+
+.menu-item:hover {
+    background-color: var(--bg-tertiary);
 }
 
 #app {
     display: flex;
-    height: 100vh;
+    flex: 1;
+    overflow: hidden;
 }
 
 /* Drawer Styles */
@@ -477,6 +595,131 @@ body {
     to {
         transform: rotate(360deg);
     }
+}
+
+/* Settings Modal */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    width: 700px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 32px;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.modal-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.modal-sidebar {
+    width: 150px;
+    background-color: var(--bg-tertiary);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    padding: 10px 0;
+}
+
+.modal-tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 12px 20px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s, color 0.2s;
+    border-left: 3px solid transparent;
+}
+
+.modal-tab-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-primary);
+}
+
+.modal-tab-btn.active {
+    color: var(--accent-color);
+    background-color: var(--bg-primary);
+    border-left-color: var(--accent-color);
+}
+
+.modal-content-area {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.modal-tab-content {
+    display: none;
+}
+
+.modal-tab-content.active {
+    display: block;
+}
+
+.modal-tab-content h3 {
+    font-size: 18px;
+    margin-bottom: 20px;
+    color: var(--text-primary);
+}
+
+.modal-tab-content h4 {
+    font-size: 14px;
+    margin-bottom: 12px;
+    color: var(--text-secondary);
 }
 
 /* Scrollbar Styles */

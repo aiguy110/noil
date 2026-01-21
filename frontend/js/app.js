@@ -26,11 +26,14 @@ class NoilApp {
 
     async init() {
         // Initialize components
+        this.initHeader();
+        this.initHamburgerMenu();
+        this.initSettingsModal();
         this.initDrawer();
         this.initTabs();
         this.initTimeline();
         this.initLogViewer();
-        this.initColorConfig();
+        this.initModalColorConfig();
         this.initFilters();
         this.initNavigationTab();
 
@@ -39,6 +42,96 @@ class NoilApp {
 
         // Set up periodic refresh (silent)
         setInterval(() => this.refresh(true), 30000); // Refresh every 30 seconds, silently
+    }
+
+    async initHeader() {
+        // Fetch and display version
+        try {
+            const health = await api.health();
+            document.getElementById('header-version').textContent = `(v${health.version})`;
+        } catch (error) {
+            console.error('Failed to fetch version:', error);
+            document.getElementById('header-version').textContent = '(v?.?.?)';
+        }
+    }
+
+    initHamburgerMenu() {
+        const hamburgerBtn = document.getElementById('hamburger-menu');
+        const dropdown = document.getElementById('hamburger-dropdown');
+
+        // Toggle dropdown
+        hamburgerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isVisible = dropdown.style.display === 'block';
+            dropdown.style.display = isVisible ? 'none' : 'block';
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && e.target !== hamburgerBtn) {
+                dropdown.style.display = 'none';
+            }
+        });
+
+        // Menu items
+        document.getElementById('menu-fiber-processing').addEventListener('click', () => {
+            dropdown.style.display = 'none';
+            // Stub for now
+            alert('Fiber Processing (coming soon)');
+        });
+
+        document.getElementById('menu-settings').addEventListener('click', () => {
+            dropdown.style.display = 'none';
+            this.openSettingsModal();
+        });
+    }
+
+    initSettingsModal() {
+        const modal = document.getElementById('settings-modal');
+        const closeBtn = document.getElementById('close-settings-modal');
+
+        // Close modal
+        closeBtn.addEventListener('click', () => {
+            this.closeSettingsModal();
+        });
+
+        // Close modal when clicking outside
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                this.closeSettingsModal();
+            }
+        });
+
+        // Modal tabs
+        const tabButtons = document.querySelectorAll('.modal-tab-btn');
+        const tabContents = document.querySelectorAll('.modal-tab-content');
+
+        tabButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tabName = btn.dataset.modalTab;
+
+                // Update active tab button
+                tabButtons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // Update active tab content
+                tabContents.forEach(content => {
+                    if (content.id === `modal-tab-${tabName}`) {
+                        content.classList.add('active');
+                    } else {
+                        content.classList.remove('active');
+                    }
+                });
+            });
+        });
+    }
+
+    openSettingsModal() {
+        document.getElementById('settings-modal').style.display = 'flex';
+    }
+
+    closeSettingsModal() {
+        document.getElementById('settings-modal').style.display = 'none';
     }
 
     initDrawer() {
@@ -152,9 +245,9 @@ class NoilApp {
         });
     }
 
-    async initColorConfig() {
-        // Populate fiber type colors
-        const fiberTypeContainer = document.getElementById('fiber-type-colors');
+    async initModalColorConfig() {
+        // Populate fiber type colors in modal
+        const fiberTypeContainer = document.getElementById('modal-fiber-type-colors');
 
         // Get all fiber type metadata
         const fiberTypeMetadata = await api.getAllFiberTypes();
@@ -177,9 +270,11 @@ class NoilApp {
         });
 
         // Reset colors button
-        document.getElementById('reset-colors').addEventListener('click', () => {
+        document.getElementById('modal-reset-colors').addEventListener('click', () => {
             colorManager.resetToDefaults();
-            this.initColorConfig();
+            // Clear and re-populate
+            fiberTypeContainer.innerHTML = '';
+            this.initModalColorConfig();
             this.timeline.render();
             this.logViewer.render();
         });

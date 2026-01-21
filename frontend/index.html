@@ -8,6 +8,32 @@
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+    <!-- Header Banner -->
+    <header id="header-banner" class="header-banner">
+        <div class="header-left">
+            <a href="https://github.com/aiguy110/noil" target="_blank" rel="noopener noreferrer" class="header-logo-link">
+                <img src="assets/noil_icon_v1_transparent.png" alt="Noil Logo" class="header-logo">
+            </a>
+            <div class="header-title">
+                <span class="header-title-main">Noil</span>
+                <span class="header-title-version" id="header-version">(v...)</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <button id="hamburger-menu" class="hamburger-menu" aria-label="Open menu">
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Hamburger Dropdown Menu -->
+    <div id="hamburger-dropdown" class="hamburger-dropdown" style="display: none;">
+        <button class="menu-item" id="menu-fiber-processing">Fiber Processing</button>
+        <button class="menu-item" id="menu-settings">Settings</button>
+    </div>
+
     <div id="app">
         <!-- Left Collapsible Drawer -->
         <aside id="drawer" class="drawer">
@@ -20,7 +46,6 @@
                 <div class="tabs">
                     <button class="tab-btn active" data-tab="navigation">Navigation</button>
                     <button class="tab-btn" data-tab="filters">Filters</button>
-                    <button class="tab-btn" data-tab="colors">Colors</button>
                 </div>
 
                 <!-- Filters Tab -->
@@ -49,20 +74,6 @@
                         </select>
                     </div>
                     <button id="apply-filters" class="btn btn-primary">Apply Filters</button>
-                </div>
-
-                <!-- Colors Tab -->
-                <div id="tab-colors" class="tab-content">
-                    <h3>Color Configuration</h3>
-
-                    <div class="color-section">
-                        <h4>Fiber Types</h4>
-                        <div id="fiber-type-colors" class="color-list">
-                            <!-- Populated dynamically -->
-                        </div>
-                    </div>
-
-                    <button id="reset-colors" class="btn btn-secondary">Reset to Defaults</button>
                 </div>
 
                 <!-- Navigation Tab -->
@@ -138,6 +149,35 @@
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay" style="display: none;">
         <div class="spinner"></div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button id="close-settings-modal" class="modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-sidebar">
+                    <button class="modal-tab-btn active" data-modal-tab="colors">Colors</button>
+                    <!-- Future tabs can be added here -->
+                </div>
+                <div class="modal-content-area">
+                    <!-- Colors Tab -->
+                    <div id="modal-tab-colors" class="modal-tab-content active">
+                        <h3>Color Configuration</h3>
+                        <div class="color-section">
+                            <h4>Fiber Types</h4>
+                            <div id="modal-fiber-type-colors" class="color-list">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                        <button id="modal-reset-colors" class="btn btn-secondary">Reset to Defaults</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts -->
