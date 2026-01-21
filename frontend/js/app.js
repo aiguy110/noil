@@ -173,17 +173,9 @@ class NoilApp {
             this.onFiberSelected(fiberId);
         });
 
-        // Zoom controls
-        document.getElementById('zoom-in').addEventListener('click', () => {
-            this.timeline.zoomIn();
-        });
-
-        document.getElementById('zoom-out').addEventListener('click', () => {
-            this.timeline.zoomOut();
-        });
-
+        // Refresh button - reset timeline view
         document.getElementById('refresh').addEventListener('click', () => {
-            this.refresh();
+            this.timeline.resetView();
         });
 
         // Initialize timeline resize functionality

@@ -407,7 +407,29 @@ body {
 
 .timeline-controls {
     display: flex;
-    gap: 5px;
+    gap: 15px;
+    align-items: center;
+}
+
+.timeline-legend {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.legend-color {
+    width: 16px;
+    height: 6px;
+    border-radius: 3px;
 }
 
 .timeline-container {
@@ -453,13 +475,28 @@ body {
     padding: 0 20px;
     font-size: 11px;
     color: var(--text-secondary);
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+}
+
+.timeline-axis::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Opera */
 }
 
 .time-label {
     position: absolute;
     font-size: 10px;
     color: var(--text-secondary);
+    transform: translateX(-50%);
+}
+
+.time-hatch {
+    position: absolute;
+    width: 1px;
+    height: 6px;
+    background-color: #666;
 }
 
 /* Timeline Resize Handle */
