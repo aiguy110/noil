@@ -35,8 +35,8 @@ class NoilApp {
         // Load initial data
         await this.loadData();
 
-        // Set up periodic refresh
-        setInterval(() => this.refresh(), 30000); // Refresh every 30 seconds
+        // Set up periodic refresh (silent)
+        setInterval(() => this.refresh(true), 30000); // Refresh every 30 seconds, silently
     }
 
     initDrawer() {
@@ -256,7 +256,19 @@ class NoilApp {
     }
 
     pushNavHistory(fiberId, logId = null) {
-        // If we're not at the end of history, truncate forward entries
+        // Check if this fiber+log combo already exists in history
+        const existingIndex = this.navHistory.findIndex(entry =>
+            entry.fiberId === fiberId && entry.logId === logId
+        );
+
+        if (existingIndex !== -1) {
+            // Found existing entry - just navigate to it
+            this.navHistoryPosition = existingIndex;
+            this.updateNavigationUI();
+            return;
+        }
+
+        // New entry - truncate forward history if we're not at the end
         if (this.navHistoryPosition < this.navHistory.length - 1) {
             this.navHistory = this.navHistory.slice(0, this.navHistoryPosition + 1);
         }
@@ -321,6 +333,17 @@ class NoilApp {
     async selectLogLine(logId) {
         this.selectedLogId = logId;
 
+        // Find the log's timestamp from loaded logs
+        console.log('App: Looking for log', logId, 'in', this.logViewer.logs.length, 'logs');
+        const logData = this.logViewer.logs.find(log => log.id === logId);
+        console.log('App: Found logData =', logData);
+        if (logData) {
+            console.log('App: Setting timestamp =', logData.timestamp);
+            this.timeline.setSelectedLogTimestamp(logData.timestamp);
+        } else {
+            console.log('App: Log not found in logViewer.logs');
+        }
+
         // Fetch fibers containing this log
         try {
             const data = await api.getLogFibers(logId);
@@ -353,6 +376,7 @@ class NoilApp {
     clearLogSelection() {
         this.selectedLogId = null;
         this.logViewer.highlightLog(null);
+        this.timeline.clearSelectedLogTimestamp();
 
         // Restore full filtered timeline
         this.timeline.setFibers(this.filteredFibers);
@@ -449,7 +473,7 @@ class NoilApp {
                 <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
             `;
 
-            item.addEventListener('click', () => {
+            item.addEventListener('click', async () => {
                 // Push to history with current log selection
                 this.pushNavHistory(fiber.id, this.selectedLogId);
 
@@ -458,7 +482,12 @@ class NoilApp {
                 this.timeline.render();
 
                 // Load fiber logs
-                this.logViewer.loadFiber(fiber.id);
+                await this.logViewer.loadFiber(fiber.id);
+
+                // Highlight the selected log in the new fiber (if it exists)
+                if (this.selectedLogId) {
+                    this.logViewer.highlightLog(this.selectedLogId);
+                }
             });
 
             container.appendChild(item);
@@ -515,9 +544,11 @@ class NoilApp {
         this.timeline.setFibers(this.filteredFibers);
     }
 
-    async loadData() {
+    async loadData(silent = false) {
         try {
-            this.showLoading(true);
+            if (!silent) {
+                this.showLoading(true);
+            }
 
             // Get all fiber types
             const fiberTypes = await api.getAllFiberTypes();
@@ -541,15 +572,28 @@ class NoilApp {
         } catch (error) {
             console.error('Failed to load data:', error);
         } finally {
-            this.showLoading(false);
+            if (!silent) {
+                this.showLoading(false);
+            }
         }
     }
 
-    async refresh() {
-        await this.loadData();
+    async refresh(silent = false) {
+        await this.loadData(silent);
+
+        // Re-apply log-based filter if a log is selected
+        if (this.selectedLogId) {
+            this.filterTimelineByLog(this.selectedLogId);
+        }
+
         // Re-render current fiber if one is selected
         if (this.timeline.selectedFiberId) {
             await this.logViewer.loadFiber(this.timeline.selectedFiberId);
+
+            // Restore selection highlight if a log was selected
+            if (this.selectedLogId) {
+                this.logViewer.highlightLog(this.selectedLogId);
+            }
         }
     }
 
@@ -557,6 +601,10 @@ class NoilApp {
         // Skip if selecting the same fiber
         if (this.navHistory[this.navHistoryPosition]?.fiberId === fiberId) {
             await this.logViewer.loadFiber(fiberId);
+            // Restore highlight if log was selected
+            if (this.selectedLogId) {
+                this.logViewer.highlightLog(this.selectedLogId);
+            }
             return;
         }
 
@@ -571,6 +619,11 @@ class NoilApp {
         }
 
         await this.logViewer.loadFiber(fiberId);
+
+        // Highlight the selected log in the new fiber (if it exists)
+        if (this.selectedLogId) {
+            this.logViewer.highlightLog(this.selectedLogId);
+        }
     }
 
     showLoading(show) {

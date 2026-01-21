@@ -7,6 +7,7 @@ class Timeline {
         this.onFiberSelect = onFiberSelect;
         this.fibers = [];
         this.selectedFiberId = null;
+        this.selectedLogTimestamp = null;
         this.zoom = 1.0;
         this.minZoom = 0.1;
         this.maxZoom = 10.0;
@@ -25,6 +26,16 @@ class Timeline {
         if (this.onFiberSelect) {
             this.onFiberSelect(fiberId);
         }
+    }
+
+    setSelectedLogTimestamp(timestamp) {
+        this.selectedLogTimestamp = timestamp;
+        this.render();
+    }
+
+    clearSelectedLogTimestamp() {
+        this.selectedLogTimestamp = null;
+        this.render();
     }
 
     zoomIn() {
@@ -103,6 +114,34 @@ class Timeline {
 
             this.container.appendChild(line);
         });
+
+        // Render timestamp indicator if log is selected
+        if (this.selectedLogTimestamp) {
+            console.log('Timeline: selectedLogTimestamp =', this.selectedLogTimestamp);
+            const timestamp = new Date(this.selectedLogTimestamp).getTime();
+            console.log('Timeline: timestamp (ms) =', timestamp);
+            console.log('Timeline: minTime =', minTime, 'maxTime =', maxTime);
+            console.log('Timeline: timestamp in range?', timestamp >= minTime && timestamp <= maxTime);
+
+            if (timestamp >= minTime && timestamp <= maxTime) {
+                const indicatorLeft = (timestamp - minTime) * pixelsPerMs;
+                console.log('Timeline: Creating indicator at left =', indicatorLeft);
+
+                const indicator = document.createElement('div');
+                indicator.className = 'timeline-log-indicator';
+                indicator.style.position = 'absolute';
+                indicator.style.left = `${indicatorLeft}px`;
+                indicator.style.top = '0';
+                indicator.style.bottom = '0';
+                indicator.style.width = '2px';
+                indicator.style.backgroundColor = 'var(--accent-color)';
+                indicator.style.zIndex = '30';
+                indicator.style.pointerEvents = 'none';
+
+                this.container.appendChild(indicator);
+                console.log('Timeline: Indicator appended');
+            }
+        }
 
         // Set container height based on number of fibers
         this.container.style.height = `${this.fibers.length * 14 + 20}px`;
