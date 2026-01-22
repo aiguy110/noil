@@ -36,6 +36,45 @@ pub struct FiberMembership {
     pub config_version: u64,
 }
 
+/// Config version record for storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigVersion {
+    pub version_hash: String,
+    pub parent_hash: Option<String>,
+    pub yaml_content: String,
+    pub created_at: DateTime<Utc>,
+    pub source: ConfigSource,
+    pub is_active: bool,
+}
+
+/// Source of config changes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigSource {
+    File,
+    UI,
+    Merge,
+}
+
+impl std::fmt::Display for ConfigSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigSource::File => write!(f, "file"),
+            ConfigSource::UI => write!(f, "ui"),
+            ConfigSource::Merge => write!(f, "merge"),
+        }
+    }
+}
+
+/// Config state tracking conflicts and hashes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigState {
+    pub has_conflict: bool,
+    pub conflict_file_path: Option<String>,
+    pub file_version_hash: Option<String>,
+    pub db_version_hash: Option<String>,
+}
+
 /// Storage trait for persisting logs, fibers, and memberships
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -111,6 +150,31 @@ pub trait Storage: Send + Sync {
     /// Takes a set of fiber IDs that should remain open (from checkpoint).
     /// All other fibers with closed=false will be marked as closed.
     async fn close_orphaned_fibers(&self, checkpointed_fiber_ids: &std::collections::HashSet<Uuid>) -> Result<usize, StorageError>;
+
+    // Config versioning
+    /// Get the currently active config version
+    async fn get_active_config_version(&self) -> Result<Option<ConfigVersion>, StorageError>;
+
+    /// Insert a new config version and mark it as active (deactivates all others)
+    async fn insert_config_version(&self, version: &ConfigVersion) -> Result<(), StorageError>;
+
+    /// Get a specific config version by hash
+    async fn get_config_version(&self, hash: &str) -> Result<Option<ConfigVersion>, StorageError>;
+
+    /// List config versions with pagination (most recent first)
+    async fn list_config_versions(&self, limit: usize, offset: usize) -> Result<Vec<ConfigVersion>, StorageError>;
+
+    /// Count total number of config versions
+    async fn count_config_versions(&self) -> Result<u64, StorageError>;
+
+    /// Check if ancestor_hash is an ancestor of descendant_hash
+    async fn is_ancestor(&self, ancestor_hash: &str, descendant_hash: &str) -> Result<bool, StorageError>;
+
+    /// Get config state
+    async fn get_config_state(&self) -> Result<Option<ConfigState>, StorageError>;
+
+    /// Update config state
+    async fn update_config_state(&self, state: &ConfigState) -> Result<(), StorageError>;
 }
 
 /// Storage errors

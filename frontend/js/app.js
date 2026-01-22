@@ -9,6 +9,8 @@ class NoilApp {
             showClosed: true,
             fiberTypes: [],
             timeRange: '24h',
+            attributes: [],          // Array of attribute filters
+            attributeLogic: 'AND'    // 'AND' or 'OR'
         };
         this.allFibers = [];
         this.filteredFibers = [];
@@ -33,6 +35,7 @@ class NoilApp {
         this.initTabs();
         this.initTimeline();
         this.initLogViewer();
+        this.initAttributesDrawer();
         this.initModalColorConfig();
         this.initFilters();
         this.initNavigationTab();
@@ -57,31 +60,9 @@ class NoilApp {
 
     initHamburgerMenu() {
         const hamburgerBtn = document.getElementById('hamburger-menu');
-        const dropdown = document.getElementById('hamburger-dropdown');
 
-        // Toggle dropdown
-        hamburgerBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isVisible = dropdown.style.display === 'block';
-            dropdown.style.display = isVisible ? 'none' : 'block';
-        });
-
-        // Close dropdown when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!dropdown.contains(e.target) && e.target !== hamburgerBtn) {
-                dropdown.style.display = 'none';
-            }
-        });
-
-        // Menu items
-        document.getElementById('menu-fiber-processing').addEventListener('click', () => {
-            dropdown.style.display = 'none';
-            // Stub for now
-            alert('Fiber Processing (coming soon)');
-        });
-
-        document.getElementById('menu-settings').addEventListener('click', () => {
-            dropdown.style.display = 'none';
+        // Clicking hamburger directly opens settings
+        hamburgerBtn.addEventListener('click', () => {
             this.openSettingsModal();
         });
     }
@@ -126,8 +107,14 @@ class NoilApp {
         });
     }
 
-    openSettingsModal() {
+    async openSettingsModal() {
         document.getElementById('settings-modal').style.display = 'flex';
+
+        // Initialize config editor on first open
+        if (!this.configEditor) {
+            this.configEditor = new ConfigEditor(api);
+            await this.configEditor.init();
+        }
     }
 
     closeSettingsModal() {
@@ -140,6 +127,27 @@ class NoilApp {
 
         toggleBtn.addEventListener('click', () => {
             drawer.classList.toggle('collapsed');
+        });
+    }
+
+    initAttributesDrawer() {
+        const closeBtn = document.getElementById('close-attributes-drawer');
+        const toggleBtn = document.getElementById('toggle-attributes-view');
+        const drawer = document.getElementById('attributes-drawer');
+
+        closeBtn.addEventListener('click', () => {
+            this.logViewer.closeAttributesDrawer();
+        });
+
+        toggleBtn.addEventListener('click', () => {
+            this.logViewer.toggleAttributesView();
+        });
+
+        // Close drawer when clicking outside
+        drawer.addEventListener('click', (e) => {
+            if (e.target === drawer) {
+                this.logViewer.closeAttributesDrawer();
+            }
         });
     }
 
@@ -312,6 +320,18 @@ class NoilApp {
         // Apply filters button
         document.getElementById('apply-filters').addEventListener('click', () => {
             this.applyFilters();
+        });
+
+        // Initialize attribute filter chip container
+        this.renderAttributeFilterChips();
+
+        // Attach event listener to attribute logic toggle
+        const logicRadios = document.querySelectorAll('input[name="attr-logic"]');
+        logicRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                this.filters.attributeLogic = radio.value;
+                this.filterFibers();
+            });
         });
     }
 
@@ -697,6 +717,10 @@ class NoilApp {
 
         this.filters.timeRange = document.getElementById('filter-time-range').value;
 
+        // Get attribute filter logic
+        const logicRadio = document.querySelector('input[name="attr-logic"]:checked');
+        this.filters.attributeLogic = logicRadio ? logicRadio.value : 'AND';
+
         // Apply filters to fibers
         this.filterFibers();
     }
@@ -731,10 +755,166 @@ class NoilApp {
                 }
             }
 
+            // Filter by attributes
+            if (this.filters.attributes.length > 0) {
+                const attributeMatch = this.matchesAttributeFilters(fiber);
+                if (!attributeMatch) {
+                    return false;
+                }
+            }
+
             return true;
         });
 
         this.timeline.setFibers(this.filteredFibers);
+    }
+
+    matchesAttributeFilters(fiber) {
+        if (this.filters.attributes.length === 0) {
+            return true;
+        }
+
+        const fiberAttrs = fiber.attributes || {};
+        const logic = this.filters.attributeLogic;
+
+        if (logic === 'AND') {
+            // All filters must match
+            return this.filters.attributes.every(filter => {
+                return this.matchesAttributeFilter(fiberAttrs, filter);
+            });
+        } else {
+            // At least one filter must match
+            return this.filters.attributes.some(filter => {
+                return this.matchesAttributeFilter(fiberAttrs, filter);
+            });
+        }
+    }
+
+    matchesAttributeFilter(fiberAttrs, filter) {
+        const fiberValue = fiberAttrs[filter.key];
+
+        // If fiber doesn't have this attribute, no match
+        if (fiberValue === undefined || fiberValue === null) {
+            return false;
+        }
+
+        const fiberValueStr = String(fiberValue);
+
+        if (filter.regex) {
+            // Regex matching
+            try {
+                const regex = new RegExp(filter.value, 'i'); // Case-insensitive
+                return regex.test(fiberValueStr);
+            } catch (e) {
+                // Invalid regex, fall back to exact match
+                console.warn('Invalid regex pattern:', filter.value, e);
+                return fiberValueStr === filter.value;
+            }
+        } else {
+            // Exact match
+            return fiberValueStr === filter.value;
+        }
+    }
+
+    addAttributeFilter(key, value, regex = false) {
+        // Check if this exact filter already exists
+        const exists = this.filters.attributes.some(
+            f => f.key === key && f.value === value && f.regex === regex
+        );
+
+        if (exists) {
+            // Switch to Filters tab to show the existing filter
+            this.switchToFiltersTab();
+            return;
+        }
+
+        // Add filter
+        const filter = {
+            id: `attr-${Date.now()}-${Math.random()}`,
+            key,
+            value,
+            regex
+        };
+
+        this.filters.attributes.push(filter);
+
+        // Update UI
+        this.renderAttributeFilterChips();
+
+        // Auto-apply filters
+        this.filterFibers();
+
+        // Switch to Filters tab to show the new chip
+        this.switchToFiltersTab();
+    }
+
+    removeAttributeFilter(filterId) {
+        this.filters.attributes = this.filters.attributes.filter(f => f.id !== filterId);
+        this.renderAttributeFilterChips();
+        this.filterFibers();
+    }
+
+    toggleAttributeFilterRegex(filterId) {
+        const filter = this.filters.attributes.find(f => f.id === filterId);
+        if (filter) {
+            filter.regex = !filter.regex;
+            this.renderAttributeFilterChips();
+            this.filterFibers();
+        }
+    }
+
+    renderAttributeFilterChips() {
+        const container = document.getElementById('attribute-filter-chips');
+        if (!container) return;
+
+        if (this.filters.attributes.length === 0) {
+            container.innerHTML = '<div class="empty-chips">No attribute filters</div>';
+            return;
+        }
+
+        let html = '';
+        this.filters.attributes.forEach(filter => {
+            const regexBadge = filter.regex ? '<span class="regex-badge">regex</span>' : '';
+            html += `
+                <div class="filter-chip">
+                    <span class="chip-content">
+                        <strong>${this.escapeHtml(filter.key)}</strong>: ${this.escapeHtml(filter.value)}
+                        ${regexBadge}
+                    </span>
+                    <button class="chip-edit" data-filter-id="${filter.id}" title="Toggle regex">⚙</button>
+                    <button class="chip-remove" data-filter-id="${filter.id}" title="Remove filter">×</button>
+                </div>
+            `;
+        });
+
+        container.innerHTML = html;
+
+        // Attach event listeners
+        container.querySelectorAll('.chip-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                this.removeAttributeFilter(e.target.getAttribute('data-filter-id'));
+            });
+        });
+
+        container.querySelectorAll('.chip-edit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                this.toggleAttributeFilterRegex(e.target.getAttribute('data-filter-id'));
+            });
+        });
+    }
+
+    switchToFiltersTab() {
+        // Simulate click on Filters tab
+        const filtersTab = document.querySelector('[data-tab="filters"]');
+        if (filtersTab && !filtersTab.classList.contains('active')) {
+            filtersTab.click();
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     async loadData(silent = false) {

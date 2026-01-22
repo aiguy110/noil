@@ -1,5 +1,7 @@
 use crate::config::parse::load_config;
-use crate::config::compute_config_version;
+use crate::config::reconcile::reconcile_config_on_startup;
+#[allow(deprecated)]
+use crate::config::version::compute_config_version;
 use crate::fiber::FiberProcessor;
 use crate::pipeline::{create_channel, run_processor, run_writer, FiberUpdate};
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
@@ -62,19 +64,53 @@ pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error:
 async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     info!(config_path = %config_path.display(), "Loading configuration");
 
-    // Load and validate config
+    // Initialize storage first (needed for reconciliation)
+    // Note: We expand storage path from config later, but for reconciliation
+    // we use a temporary default or the path from config file parsing
+    let temp_config = load_config(config_path)?;
+    let storage_path = &temp_config.storage.path;
+    info!(path = %storage_path.display(), "Initializing storage");
+    let storage = Arc::new(DuckDbStorage::new(storage_path)?);
+    storage.init_schema().await?;
+
+    // Reconcile config file with database
+    info!("Reconciling config with database");
+    let reconcile_result = reconcile_config_on_startup(config_path, storage.as_ref()).await?;
+    match &reconcile_result {
+        crate::config::reconcile::ReconcileResult::Initialized { hash } => {
+            info!(hash = %hash, "Config initialized in database");
+        }
+        crate::config::reconcile::ReconcileResult::NoChange => {
+            info!("Config unchanged");
+        }
+        crate::config::reconcile::ReconcileResult::FastForwardedFile { from_hash, to_hash } => {
+            info!(from = %from_hash, to = %to_hash, "Config file fast-forwarded from database");
+        }
+        crate::config::reconcile::ReconcileResult::FastForwardedDB { from_hash, to_hash } => {
+            info!(from = %from_hash, to = %to_hash, "Database fast-forwarded from config file");
+        }
+        crate::config::reconcile::ReconcileResult::Merged { merged_hash, .. } => {
+            info!(hash = %merged_hash, "Config merged successfully");
+        }
+        crate::config::reconcile::ReconcileResult::UnresolvedConflict { conflict_file } => {
+            error!(conflict_file = %conflict_file, "Unresolved config conflict");
+            return Err(crate::config::parse::ConfigError::Validation(
+                format!("Unresolved conflict in {}", conflict_file)
+            ).into());
+        }
+    }
+
+    // Load and validate config (may have been updated by reconciliation)
     let config = load_config(config_path)?;
 
     // Compute config version from content hash
+    #[allow(deprecated)]
     let config_version = compute_config_version(config_path)
         .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
 
     info!(config_version = config_version, "Computed config version");
 
-    // Initialize storage
-    info!(path = %config.storage.path.display(), "Initializing storage");
-    let storage = Arc::new(DuckDbStorage::new(&config.storage.path)?);
-    storage.init_schema().await?;
+    // Storage already initialized for reconciliation above
 
     // Load checkpoint if enabled
     let checkpoint = if config.pipeline.checkpoint.enabled {

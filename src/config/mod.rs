@@ -1,5 +1,7 @@
+pub mod diff;
 pub mod generate;
 pub mod parse;
+pub mod reconcile;
 pub mod types;
 pub mod version;
 
@@ -7,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 pub use parse::{load_config, ConfigError};
 pub use types::{Config, WebConfig};
-pub use version::compute_config_version;
 
 /// Expands tilde (~) in paths to the user's home directory.
 /// If the path starts with "~/" or is exactly "~", replaces it with the home directory.

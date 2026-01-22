@@ -92,6 +92,33 @@ class NoilAPI {
     async getAllSources() {
         return this.request('/api/sources');
     }
+
+    // Config versioning
+    async getCurrentConfig() {
+        return this.request('/api/config/current');
+    }
+
+    async getConfigHistory(params = {}) {
+        const query = new URLSearchParams();
+        if (params.limit) query.append('limit', params.limit);
+        if (params.offset) query.append('offset', params.offset);
+        return this.request(`/api/config/history?${query}`);
+    }
+
+    async getConfigVersion(hash) {
+        return this.request(`/api/config/versions/${hash}`);
+    }
+
+    async updateConfig(yamlContent) {
+        return this.request('/api/config', {
+            method: 'PUT',
+            body: JSON.stringify({ yaml_content: yamlContent }),
+        });
+    }
+
+    async getConfigDiff(hash1, hash2) {
+        return this.request(`/api/config/diff/${hash1}/${hash2}`);
+    }
 }
 
 // Export singleton instance

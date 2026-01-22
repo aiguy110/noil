@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{routing::{get, put}, Router};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tower_http::services::ServeDir;
@@ -7,9 +7,9 @@ use crate::config::{types::FiberTypeConfig, WebConfig};
 use crate::storage::Storage;
 
 use super::api::{
-    health_check, list_logs, get_log, get_log_fibers,
-    list_fibers, get_fiber, get_fiber_logs,
-    list_fiber_types, list_sources, AppState,
+    get_config_diff, get_config_history, get_config_version, get_current_config, get_fiber,
+    get_fiber_logs, get_log, get_log_fibers, health_check, list_fiber_types, list_fibers,
+    list_logs, list_sources, update_config, AppState,
 };
 
 /// Start the web server with the given storage backend and configuration
@@ -32,6 +32,11 @@ pub async fn run_server(
         .route("/api/fibers/:id/logs", get(get_fiber_logs))
         .route("/api/fiber-types", get(list_fiber_types))
         .route("/api/sources", get(list_sources))
+        .route("/api/config/current", get(get_current_config))
+        .route("/api/config/history", get(get_config_history))
+        .route("/api/config/versions/:hash", get(get_config_version))
+        .route("/api/config", put(update_config))
+        .route("/api/config/diff/:hash1/:hash2", get(get_config_diff))
         .with_state(app_state);
 
     // Serve static frontend files

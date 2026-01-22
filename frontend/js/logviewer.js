@@ -12,6 +12,19 @@ class LogViewer {
         this.limit = 100;
         this.hasMore = false;
         this.onLogSelect = null;  // Callback function for log selection
+        this.sources = [];  // List of source IDs
+        this.attributesViewMode = 'pretty';  // 'pretty' or 'json'
+        this.loadSources();
+    }
+
+    async loadSources() {
+        try {
+            const response = await api.getAllSources();
+            this.sources = response.sources || [];
+        } catch (error) {
+            console.error('Failed to load sources:', error);
+            this.sources = [];
+        }
     }
 
     async loadFiber(fiberId, silent = false) {
@@ -70,18 +83,137 @@ class LogViewer {
             return;
         }
 
-        this.titleEl.textContent = `Fiber: ${this.currentFiber.fiber_type}`;
-
         const logCount = this.logs.length;
         const status = this.currentFiber.closed ? 'Closed' : 'Open';
-        const start = new Date(this.currentFiber.first_activity).toLocaleString();
-        const end = new Date(this.currentFiber.last_activity).toLocaleString();
 
-        this.infoEl.innerHTML = `
-            <span>${logCount} log${logCount !== 1 ? 's' : ''}</span>
-            <span style="margin-left: 15px;">${status}</span>
-            <span style="margin-left: 15px;">ID: ${this.currentFiber.id}</span>
+        // Determine if this is a source or traced fiber
+        const isSourceFiber = this.sources.includes(this.currentFiber.fiber_type);
+        const fiberCategory = isSourceFiber ? 'source' : 'traced';
+
+        // Build title content with fiber info
+        this.titleEl.innerHTML = `
+            <span class="fiber-info-label">Fiber Info:</span>
+            <span class="fiber-info-details">
+                <span>${logCount} log${logCount !== 1 ? 's' : ''}</span>
+                <span style="margin-left: 15px;">${status}</span>
+                <span style="margin-left: 15px;">ID: ${this.currentFiber.id}</span>
+            </span>
         `;
+
+        // Build info section with type and view attributes link
+        this.infoEl.innerHTML = `
+            <span class="fiber-type-info">Type: ${this.currentFiber.fiber_type} (${fiberCategory})</span>
+            <a href="#" id="view-attributes-link" class="view-attributes-link">View Attributes</a>
+        `;
+
+        // Add event listener to view attributes link
+        const viewAttributesLink = document.getElementById('view-attributes-link');
+        if (viewAttributesLink) {
+            viewAttributesLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.openAttributesDrawer();
+            });
+        }
+    }
+
+    openAttributesDrawer() {
+        const drawer = document.getElementById('attributes-drawer');
+        if (drawer) {
+            drawer.classList.add('open');
+            this.updateToggleButton();
+            this.renderAttributes();
+            this.attachAttributeFilterListeners();
+        }
+    }
+
+    closeAttributesDrawer() {
+        const drawer = document.getElementById('attributes-drawer');
+        if (drawer) {
+            drawer.classList.remove('open');
+            // Reset to pretty view when closing
+            this.attributesViewMode = 'pretty';
+        }
+    }
+
+    toggleAttributesView() {
+        this.attributesViewMode = this.attributesViewMode === 'pretty' ? 'json' : 'pretty';
+        this.renderAttributes();
+        this.updateToggleButton();
+    }
+
+    updateToggleButton() {
+        const toggleBtn = document.getElementById('toggle-attributes-view');
+        if (toggleBtn) {
+            if (this.attributesViewMode === 'pretty') {
+                toggleBtn.textContent = 'JSON';
+                toggleBtn.title = 'View Raw JSON';
+            } else {
+                toggleBtn.textContent = 'Pretty';
+                toggleBtn.title = 'View Pretty';
+            }
+        }
+    }
+
+    renderAttributes() {
+        const container = document.getElementById('attributes-content');
+        if (!container || !this.currentFiber) return;
+
+        const attributes = this.currentFiber.attributes || {};
+        const attributeKeys = Object.keys(attributes);
+
+        if (attributeKeys.length === 0) {
+            container.innerHTML = '<div class="empty-message">No attributes</div>';
+            return;
+        }
+
+        if (this.attributesViewMode === 'json') {
+            // Render JSON view
+            const jsonStr = JSON.stringify(attributes, null, 2);
+            container.innerHTML = `<pre class="attributes-json"><code>${this.escapeHtml(jsonStr)}</code></pre>`;
+        } else {
+            // Render pretty view
+            let html = '<div class="attribute-list">';
+            attributeKeys.sort().forEach(key => {
+                const value = attributes[key];
+                html += `
+                    <div class="attribute-item">
+                        <div class="attribute-key">${this.escapeHtml(key)}</div>
+                        <div class="attribute-value">${this.escapeHtml(String(value))}</div>
+                        <button class="btn-add-filter" 
+                                data-attr-key="${this.escapeHtml(key)}" 
+                                data-attr-value="${this.escapeHtml(String(value))}"
+                                title="Add filter for this attribute">
+                            + Filter
+                        </button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+    }
+
+    attachAttributeFilterListeners() {
+        const container = document.getElementById('attributes-content');
+        if (!container) return;
+
+        // Event delegation for "Add Filter" buttons in attribute cards
+        container.addEventListener('click', (e) => {
+            if (e.target.classList.contains('btn-add-filter')) {
+                const key = e.target.getAttribute('data-attr-key');
+                const value = e.target.getAttribute('data-attr-value');
+                // Call the app's addAttributeFilter method
+                if (window.app) {
+                    window.app.addAttributeFilter(key, value, false); // false = not regex
+                }
+            }
+        });
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     render() {

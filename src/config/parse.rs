@@ -15,7 +15,13 @@ pub enum ConfigError {
     YamlParse(#[from] serde_yaml::Error),
 
     #[error("validation failed:\n{}", .0.join("\n"))]
-    Validation(Vec<String>),
+    ValidationList(Vec<String>),
+
+    #[error("validation failed: {0}")]
+    Validation(String),
+
+    #[error("storage error: {0}")]
+    Storage(#[from] crate::storage::traits::StorageError),
 }
 
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
@@ -118,7 +124,7 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(ConfigError::Validation(errors))
+        Err(ConfigError::ValidationList(errors))
     }
 }
 

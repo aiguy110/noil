@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::config::diff::create_diff_with_context;
 use crate::config::types::FiberTypeConfig;
-use crate::storage::{Storage, StorageError, StoredLog, FiberRecord};
+use crate::config::version::compute_config_hash;
+use crate::storage::traits::{ConfigSource, ConfigVersion, FiberRecord, Storage, StorageError, StoredLog};
 
 /// Shared application state
 #[derive(Clone)]
@@ -399,4 +401,179 @@ pub async fn list_sources(
 ) -> Result<Json<Vec<String>>, ApiError> {
     let sources = state.storage.get_all_source_ids().await?;
     Ok(Json(sources))
+}
+
+// ============================================================================
+// Config Versioning API
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ConfigVersionDto {
+    pub version_hash: String,
+    pub parent_hash: Option<String>,
+    pub yaml_content: String,
+    pub created_at: DateTime<Utc>,
+    pub source: String,
+    pub is_active: bool,
+}
+
+impl From<ConfigVersion> for ConfigVersionDto {
+    fn from(version: ConfigVersion) -> Self {
+        Self {
+            version_hash: version.version_hash,
+            parent_hash: version.parent_hash,
+            yaml_content: version.yaml_content,
+            created_at: version.created_at,
+            source: version.source.to_string(),
+            is_active: version.is_active,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateConfigRequest {
+    pub yaml_content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigHistoryResponse {
+    pub versions: Vec<ConfigVersionDto>,
+    pub total: u64,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigDiffResponse {
+    pub from: ConfigVersionDto,
+    pub to: ConfigVersionDto,
+    pub diff: String,
+}
+
+/// GET /api/config/current
+pub async fn get_current_config(
+    State(state): State<AppState>,
+) -> Result<Json<ConfigVersionDto>, ApiError> {
+    let version = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .ok_or_else(|| ApiError::NotFound("No active config version found".to_string()))?;
+
+    Ok(Json(ConfigVersionDto::from(version)))
+}
+
+/// GET /api/config/history
+pub async fn get_config_history(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<ConfigHistoryResponse>, ApiError> {
+    let versions = state
+        .storage
+        .list_config_versions(params.limit(), params.offset())
+        .await?;
+
+    let total = state.storage.count_config_versions().await?;
+
+    let versions_dto = versions.into_iter().map(ConfigVersionDto::from).collect();
+
+    Ok(Json(ConfigHistoryResponse {
+        versions: versions_dto,
+        total,
+        limit: params.limit(),
+        offset: params.offset(),
+    }))
+}
+
+/// GET /api/config/versions/:hash
+pub async fn get_config_version(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+) -> Result<Json<ConfigVersionDto>, ApiError> {
+    let version = state
+        .storage
+        .get_config_version(&hash)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Config version not found: {}", hash)))?;
+
+    Ok(Json(ConfigVersionDto::from(version)))
+}
+
+/// PUT /api/config
+pub async fn update_config(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateConfigRequest>,
+) -> Result<Json<ConfigVersionDto>, ApiError> {
+    // Validate YAML
+    serde_yaml::from_str::<serde_yaml::Value>(&request.yaml_content)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid YAML: {}", e)))?;
+
+    // Compute hash
+    let version_hash = compute_config_hash(&request.yaml_content);
+
+    // Get current active version for parent hash
+    let parent_hash = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .map(|v| v.version_hash);
+
+    // Create new version (not active - requires restart)
+    let new_version = ConfigVersion {
+        version_hash,
+        parent_hash,
+        yaml_content: request.yaml_content,
+        created_at: Utc::now(),
+        source: ConfigSource::UI,
+        is_active: false, // Not active until restart
+    };
+
+    // Check if this version already exists
+    if state
+        .storage
+        .get_config_version(&new_version.version_hash)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::BadRequest(
+            "Config version already exists (no changes made)".to_string(),
+        ));
+    }
+
+    // Note: For MVP, we validate the config but don't save it to the database.
+    // The user needs to manually update the config file and restart.
+    // Future enhancement: Add insert_config_version_inactive method to save without activating.
+
+    Ok(Json(ConfigVersionDto::from(new_version)))
+}
+
+/// GET /api/config/diff/:hash1/:hash2
+pub async fn get_config_diff(
+    State(state): State<AppState>,
+    Path((hash1, hash2)): Path<(String, String)>,
+) -> Result<Json<ConfigDiffResponse>, ApiError> {
+    let version1 = state
+        .storage
+        .get_config_version(&hash1)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Config version not found: {}", hash1)))?;
+
+    let version2 = state
+        .storage
+        .get_config_version(&hash2)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Config version not found: {}", hash2)))?;
+
+    let diff = create_diff_with_context(
+        &version1.yaml_content,
+        &version2.yaml_content,
+        &format!("version {}", &hash1[..8]),
+        &format!("version {}", &hash2[..8]),
+    );
+
+    Ok(Json(ConfigDiffResponse {
+        from: ConfigVersionDto::from(version1),
+        to: ConfigVersionDto::from(version2),
+        diff,
+    }))
 }

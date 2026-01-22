@@ -1,5 +1,5 @@
 use super::checkpoint::Checkpoint;
-use super::traits::{FiberMembership, FiberRecord, Storage, StorageError, StoredLog};
+use super::traits::{ConfigSource, ConfigState, ConfigVersion, FiberMembership, FiberRecord, Storage, StorageError, StoredLog};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
@@ -194,6 +194,48 @@ impl Storage for DuckDbStorage {
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     checkpoint_data TEXT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL,
+                    CHECK (id = 1)
+                )",
+                [],
+            )?;
+
+            // Create config_versions table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS config_versions (
+                    version_hash VARCHAR(64) PRIMARY KEY,
+                    parent_hash VARCHAR(64),
+                    yaml_content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    source VARCHAR(16) NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    FOREIGN KEY (parent_hash) REFERENCES config_versions(version_hash)
+                )",
+                [],
+            )?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_versions_created ON config_versions(created_at DESC)",
+                [],
+            )?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_versions_parent ON config_versions(parent_hash)",
+                [],
+            )?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_versions_active ON config_versions(is_active)",
+                [],
+            )?;
+
+            // Create config_state table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS config_state (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    has_conflict BOOLEAN NOT NULL DEFAULT FALSE,
+                    conflict_file_path VARCHAR,
+                    file_version_hash VARCHAR(64),
+                    db_version_hash VARCHAR(64),
                     CHECK (id = 1)
                 )",
                 [],
@@ -762,6 +804,310 @@ impl Storage for DuckDbStorage {
             }
 
             Ok::<usize, StorageError>(closed_count)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_active_config_version(&self) -> Result<Option<ConfigVersion>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT version_hash, parent_hash, yaml_content, epoch_us(created_at), source, is_active
+                 FROM config_versions WHERE is_active = TRUE",
+            )?;
+
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let source_str: String = row.get(4)?;
+                let source = match source_str.as_str() {
+                    "file" => ConfigSource::File,
+                    "ui" => ConfigSource::UI,
+                    "merge" => ConfigSource::Merge,
+                    _ => ConfigSource::File,
+                };
+
+                let version = ConfigVersion {
+                    version_hash: row.get(0)?,
+                    parent_hash: row.get(1)?,
+                    yaml_content: row.get(2)?,
+                    created_at: DateTime::from_timestamp_micros(row.get::<_, i64>(3)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            3,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    source,
+                    is_active: row.get(5)?,
+                };
+                Ok(Some(version))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn insert_config_version(&self, version: &ConfigVersion) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let version = version.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Start a transaction to deactivate others and insert new version atomically
+            conn.execute("BEGIN TRANSACTION", [])?;
+
+            // Deactivate all existing versions
+            match conn.execute("UPDATE config_versions SET is_active = FALSE WHERE is_active = TRUE", []) {
+                Ok(_) => {},
+                Err(e) => {
+                    conn.execute("ROLLBACK", []).ok();
+                    return Err(e.into());
+                }
+            }
+
+            // Insert new version
+            let result = conn.execute(
+                "INSERT INTO config_versions (version_hash, parent_hash, yaml_content, created_at, source, is_active)
+                 VALUES (?, ?, ?, to_timestamp(? / 1000000.0), ?, ?)",
+                duckdb::params![
+                    version.version_hash,
+                    version.parent_hash,
+                    version.yaml_content,
+                    version.created_at.timestamp_micros(),
+                    version.source.to_string(),
+                    version.is_active,
+                ],
+            );
+
+            match result {
+                Ok(_) => {
+                    conn.execute("COMMIT", [])?;
+                    Ok::<(), StorageError>(())
+                }
+                Err(e) => {
+                    conn.execute("ROLLBACK", []).ok();
+                    Err(e.into())
+                }
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_config_version(&self, hash: &str) -> Result<Option<ConfigVersion>, StorageError> {
+        let conn = self.conn.clone();
+        let hash = hash.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT version_hash, parent_hash, yaml_content, epoch_us(created_at), source, is_active
+                 FROM config_versions WHERE version_hash = ?",
+            )?;
+
+            let mut rows = stmt.query(duckdb::params![hash])?;
+
+            if let Some(row) = rows.next()? {
+                let source_str: String = row.get(4)?;
+                let source = match source_str.as_str() {
+                    "file" => ConfigSource::File,
+                    "ui" => ConfigSource::UI,
+                    "merge" => ConfigSource::Merge,
+                    _ => ConfigSource::File,
+                };
+
+                let version = ConfigVersion {
+                    version_hash: row.get(0)?,
+                    parent_hash: row.get(1)?,
+                    yaml_content: row.get(2)?,
+                    created_at: DateTime::from_timestamp_micros(row.get::<_, i64>(3)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            3,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    source,
+                    is_active: row.get(5)?,
+                };
+                Ok(Some(version))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn list_config_versions(&self, limit: usize, offset: usize) -> Result<Vec<ConfigVersion>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT version_hash, parent_hash, yaml_content, epoch_us(created_at), source, is_active
+                 FROM config_versions
+                 ORDER BY created_at DESC
+                 LIMIT ? OFFSET ?",
+            )?;
+
+            let rows = stmt.query_map(
+                duckdb::params![limit as i64, offset as i64],
+                |row| {
+                    let source_str: String = row.get(4)?;
+                    let source = match source_str.as_str() {
+                        "file" => ConfigSource::File,
+                        "ui" => ConfigSource::UI,
+                        "merge" => ConfigSource::Merge,
+                        _ => ConfigSource::File,
+                    };
+
+                    Ok(ConfigVersion {
+                        version_hash: row.get(0)?,
+                        parent_hash: row.get(1)?,
+                        yaml_content: row.get(2)?,
+                        created_at: DateTime::from_timestamp_micros(row.get::<_, i64>(3)?)
+                            .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                                3,
+                                duckdb::types::Type::BigInt,
+                                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                            ))?,
+                        source,
+                        is_active: row.get(5)?,
+                    })
+                },
+            )?;
+
+            let mut versions = Vec::new();
+            for row in rows {
+                versions.push(row?);
+            }
+            Ok(versions)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn count_config_versions(&self) -> Result<u64, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM config_versions")?;
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let count: i64 = row.get(0)?;
+                Ok(count as u64)
+            } else {
+                Ok(0)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn is_ancestor(&self, ancestor_hash: &str, descendant_hash: &str) -> Result<bool, StorageError> {
+        let conn = self.conn.clone();
+        let ancestor_hash = ancestor_hash.to_string();
+        let descendant_hash = descendant_hash.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Traverse parent links iteratively with a visited set to prevent cycles
+            let mut current_hash = descendant_hash;
+            let mut visited = std::collections::HashSet::new();
+
+            loop {
+                if current_hash == ancestor_hash {
+                    return Ok(true);
+                }
+
+                if visited.contains(&current_hash) {
+                    // Cycle detected, stop traversal
+                    return Ok(false);
+                }
+
+                visited.insert(current_hash.clone());
+
+                // Get parent hash
+                let mut stmt = conn.prepare(
+                    "SELECT parent_hash FROM config_versions WHERE version_hash = ?"
+                )?;
+
+                let mut rows = stmt.query(duckdb::params![current_hash])?;
+
+                if let Some(row) = rows.next()? {
+                    let parent_hash: Option<String> = row.get(0)?;
+                    if let Some(parent) = parent_hash {
+                        current_hash = parent;
+                    } else {
+                        // Reached root, ancestor not found
+                        return Ok(false);
+                    }
+                } else {
+                    // Hash not found in database
+                    return Ok(false);
+                }
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_config_state(&self) -> Result<Option<ConfigState>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT has_conflict, conflict_file_path, file_version_hash, db_version_hash
+                 FROM config_state WHERE id = 1",
+            )?;
+
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let state = ConfigState {
+                    has_conflict: row.get(0)?,
+                    conflict_file_path: row.get(1)?,
+                    file_version_hash: row.get(2)?,
+                    db_version_hash: row.get(3)?,
+                };
+                Ok(Some(state))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn update_config_state(&self, state: &ConfigState) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let state = state.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            conn.execute(
+                "INSERT OR REPLACE INTO config_state (id, has_conflict, conflict_file_path, file_version_hash, db_version_hash)
+                 VALUES (1, ?, ?, ?, ?)",
+                duckdb::params![
+                    state.has_conflict,
+                    state.conflict_file_path,
+                    state.file_version_hash,
+                    state.db_version_hash,
+                ],
+            )?;
+
+            Ok::<(), StorageError>(())
         })
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?

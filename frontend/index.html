@@ -28,12 +28,6 @@
         </div>
     </header>
 
-    <!-- Hamburger Dropdown Menu -->
-    <div id="hamburger-dropdown" class="hamburger-dropdown" style="display: none;">
-        <button class="menu-item" id="menu-fiber-processing">Fiber Processing</button>
-        <button class="menu-item" id="menu-settings">Settings</button>
-    </div>
-
     <div id="app">
         <!-- Left Collapsible Drawer -->
         <aside id="drawer" class="drawer">
@@ -68,10 +62,28 @@
                         <select id="filter-time-range">
                             <option value="1h">Last Hour</option>
                             <option value="6h">Last 6 Hours</option>
-                            <option value="24h" selected>Last 24 Hours</option>
+                            <option value="24h">Last 24 Hours</option>
                             <option value="7d">Last 7 Days</option>
-                            <option value="all">All Time</option>
+                            <option value="all" selected>All Time</option>
                         </select>
+                    </div>
+                    <div class="filter-section">
+                        <div class="filter-section-header">
+                            <label>Attribute Filters:</label>
+                            <div class="filter-logic-toggle">
+                                <label>
+                                    <input type="radio" name="attr-logic" value="AND" checked>
+                                    AND
+                                </label>
+                                <label>
+                                    <input type="radio" name="attr-logic" value="OR">
+                                    OR
+                                </label>
+                            </div>
+                        </div>
+                        <div id="attribute-filter-chips" class="filter-chips">
+                            <!-- Chips will be dynamically populated -->
+                        </div>
                     </div>
                     <button id="apply-filters" class="btn btn-primary">Apply Filters</button>
                 </div>
@@ -135,13 +147,29 @@
                         <span id="fiber-info"></span>
                     </div>
                 </div>
-                <div id="log-viewer" class="log-viewer">
-                    <div id="log-content" class="log-content">
-                        <!-- Logs displayed here -->
+                <div class="log-viewer-body">
+                    <div id="log-viewer" class="log-viewer">
+                        <div id="log-content" class="log-content">
+                            <!-- Logs displayed here -->
+                        </div>
                     </div>
-                </div>
-                <div class="log-viewer-footer">
-                    <button id="load-more-logs" class="btn btn-secondary" style="display: none;">Load More</button>
+                    <div class="log-viewer-footer">
+                        <button id="load-more-logs" class="btn btn-secondary" style="display: none;">Load More</button>
+                    </div>
+
+                    <!-- Attributes Drawer (Right Side) -->
+                    <aside id="attributes-drawer" class="attributes-drawer">
+                        <div class="attributes-drawer-header">
+                            <h3>Fiber Attributes</h3>
+                            <div class="attributes-drawer-actions">
+                                <button id="toggle-attributes-view" class="btn-icon view-toggle-btn" title="View Raw JSON">JSON</button>
+                                <button id="close-attributes-drawer" class="drawer-close-btn" aria-label="Close">&times;</button>
+                            </div>
+                        </div>
+                        <div class="attributes-drawer-content" id="attributes-content">
+                            <!-- Attributes populated dynamically -->
+                        </div>
+                    </aside>
                 </div>
             </section>
         </main>
@@ -162,6 +190,8 @@
             <div class="modal-body">
                 <div class="modal-sidebar">
                     <button class="modal-tab-btn active" data-modal-tab="colors">Colors</button>
+                    <button class="modal-tab-btn" data-modal-tab="config">Configuration</button>
+                    <button class="modal-tab-btn" data-modal-tab="fiber-processing">Fiber Processing</button>
                     <!-- Future tabs can be added here -->
                 </div>
                 <div class="modal-content-area">
@@ -176,16 +206,43 @@
                         </div>
                         <button id="modal-reset-colors" class="btn btn-secondary">Reset to Defaults</button>
                     </div>
+
+                    <!-- Configuration Tab -->
+                    <div id="modal-tab-config" class="modal-tab-content">
+                        <div class="config-notice">
+                            <strong>Note:</strong> Configuration changes require a restart to take effect.
+                        </div>
+                        <div class="config-editor-toolbar">
+                            <button id="config-save" class="btn btn-primary">Save Configuration</button>
+                            <button id="config-reset" class="btn btn-secondary">Reset</button>
+                            <button id="config-history" class="btn btn-secondary">View History</button>
+                            <span class="config-status"></span>
+                        </div>
+                        <div class="config-editor-layout">
+                            <div class="config-editor-main">
+                                <h4>YAML Editor</h4>
+                                <textarea id="config-yaml-editor" spellcheck="false"></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Fiber Processing Tab -->
+                    <div id="modal-tab-fiber-processing" class="modal-tab-content">
+                        <h3>Fiber Processing</h3>
+                        <!-- Future fiber processing controls will go here -->
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
     <script src="js/api.js"></script>
     <script src="js/colors.js"></script>
     <script src="js/timeline.js"></script>
     <script src="js/logviewer.js"></script>
+    <script src="js/config-editor.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>
