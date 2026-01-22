@@ -14,10 +14,12 @@ class LogViewer {
         this.onLogSelect = null;  // Callback function for log selection
     }
 
-    async loadFiber(fiberId) {
+    async loadFiber(fiberId, silent = false) {
         try {
-            // Show loading state
-            this.showLoading();
+            // Show loading state only if not silent
+            if (!silent) {
+                this.showLoading();
+            }
 
             // Fetch fiber details
             const fiber = await api.getFiber(fiberId);
@@ -183,7 +185,7 @@ class LogViewer {
     showLoading() {
         this.container.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">⏳</div>
+                <div class="spinner"></div>
                 <div class="empty-state-text">Loading logs...</div>
             </div>
         `;

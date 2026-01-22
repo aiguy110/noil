@@ -360,6 +360,11 @@ class NoilApp {
         this.navHistoryPosition = this.navHistory.length - 1;
 
         this.updateNavigationUI();
+
+        // Update timeline filter if a log is selected (to reflect truncated history)
+        if (logId) {
+            this.filterTimelineByLog(logId);
+        }
     }
 
     async navigateBack() {
@@ -380,6 +385,11 @@ class NoilApp {
                 this.selectedLogTimestamp = entry.timestamp;
                 this.logViewer.highlightLog(entry.logId);
                 this.filterTimelineByLog(entry.logId);
+
+                // Update other fibers list to reflect current fiber
+                if (this.logFibersCache[entry.logId]) {
+                    this.updateOtherFibersList(this.logFibersCache[entry.logId]);
+                }
             } else {
                 this.clearLogSelection();
             }
@@ -406,6 +416,11 @@ class NoilApp {
                 this.selectedLogTimestamp = entry.timestamp;
                 this.logViewer.highlightLog(entry.logId);
                 this.filterTimelineByLog(entry.logId);
+
+                // Update other fibers list to reflect current fiber
+                if (this.logFibersCache[entry.logId]) {
+                    this.updateOtherFibersList(this.logFibersCache[entry.logId]);
+                }
             } else {
                 this.clearLogSelection();
             }
@@ -469,8 +484,20 @@ class NoilApp {
     }
 
     filterTimelineByLog(logId) {
+        // Get fibers containing the selected log
         const fiberIds = this.logFibersCache[logId]?.map(f => f.id) || [];
-        const filteredFibers = this.allFibers.filter(f => fiberIds.includes(f.id));
+
+        // Get fiber IDs from navigation history up to current position
+        // (don't include "future" history that user has navigated back from)
+        const navHistoryFiberIds = this.navHistory
+            .slice(0, this.navHistoryPosition + 1)
+            .map(entry => entry.fiberId);
+
+        // Combine both sets (using Set to avoid duplicates)
+        const allFiberIds = new Set([...fiberIds, ...navHistoryFiberIds]);
+
+        // Filter timeline to show all these fibers
+        const filteredFibers = this.allFibers.filter(f => allFiberIds.has(f.id));
         this.timeline.setFibers(filteredFibers);
     }
 
@@ -519,6 +546,10 @@ class NoilApp {
                 item.classList.add('current');
             }
 
+            // Set fiber type color for the border
+            const color = colorManager.getFiberTypeColor(fiber.fiber_type);
+            item.style.borderLeftColor = color;
+
             // Format timestamp and source badge if available
             let timestampInfoHtml = '';
             if (entry.logId && entry.timestamp) {
@@ -540,6 +571,7 @@ class NoilApp {
                 }
 
                 timestampInfoHtml = `
+                    <div class="nav-item-section-label">Line:</div>
                     <div class="nav-item-timestamp-row">
                         <span class="nav-item-timestamp">${timeStr}</span>
                         ${sourceBadgeHtml}
@@ -547,8 +579,11 @@ class NoilApp {
             }
 
             item.innerHTML = `
-                <div class="nav-item-type">${fiber.fiber_type}</div>
-                <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
+                <div class="nav-item-section-label">Fiber:</div>
+                <div class="nav-item-fiber-row">
+                    <span class="nav-item-type">${fiber.fiber_type}</span>
+                    <span class="nav-item-id">${fiber.id.substring(0, 8)}...</span>
+                </div>
                 ${timestampInfoHtml}
             `;
 
@@ -568,6 +603,11 @@ class NoilApp {
                     this.selectedLogTimestamp = historyEntry.timestamp;
                     this.logViewer.highlightLog(historyEntry.logId);
                     this.filterTimelineByLog(historyEntry.logId);
+
+                    // Update other fibers list to reflect current fiber
+                    if (this.logFibersCache[historyEntry.logId]) {
+                        this.updateOtherFibersList(this.logFibersCache[historyEntry.logId]);
+                    }
                 } else {
                     this.clearLogSelection();
                 }
@@ -601,8 +641,11 @@ class NoilApp {
             item.style.borderLeftColor = color;
 
             item.innerHTML = `
-                <div class="nav-item-type">${fiber.fiber_type}</div>
-                <div class="nav-item-id">${fiber.id.substring(0, 8)}...</div>
+                <div class="nav-item-section-label">Fiber:</div>
+                <div class="nav-item-fiber-row">
+                    <span class="nav-item-type">${fiber.fiber_type}</span>
+                    <span class="nav-item-id">${fiber.id.substring(0, 8)}...</span>
+                </div>
             `;
 
             item.addEventListener('click', async () => {
@@ -619,6 +662,11 @@ class NoilApp {
                 // Highlight the selected log in the new fiber (if it exists)
                 if (this.selectedLogId) {
                     this.logViewer.highlightLog(this.selectedLogId);
+                }
+
+                // Update the other fibers list to reflect the new current fiber
+                if (this.selectedLogId && this.logFibersCache[this.selectedLogId]) {
+                    this.updateOtherFibersList(this.logFibersCache[this.selectedLogId]);
                 }
             });
 
@@ -733,12 +781,48 @@ class NoilApp {
 
         // Re-render current fiber if one is selected
         if (this.timeline.selectedFiberId) {
-            await this.logViewer.loadFiber(this.timeline.selectedFiberId);
+            // If silent refresh, check if there are any changes before reloading
+            if (silent) {
+                const hasChanges = await this.checkFiberHasChanges(this.timeline.selectedFiberId);
+                if (!hasChanges) {
+                    // No changes, skip reload
+                    return;
+                }
+            }
+
+            await this.logViewer.loadFiber(this.timeline.selectedFiberId, silent);
 
             // Restore selection highlight if a log was selected
             if (this.selectedLogId) {
                 this.logViewer.highlightLog(this.selectedLogId);
             }
+        }
+    }
+
+    async checkFiberHasChanges(fiberId) {
+        try {
+            // Fetch current fiber metadata
+            const freshFiber = await api.getFiber(fiberId);
+            const currentFiber = this.logViewer.currentFiber;
+
+            if (!currentFiber) {
+                return true; // No current fiber loaded, should reload
+            }
+
+            // Check if last_activity has changed (indicates new logs)
+            if (freshFiber.last_activity !== currentFiber.last_activity) {
+                return true;
+            }
+
+            // Check if closed status changed
+            if (freshFiber.closed !== currentFiber.closed) {
+                return true;
+            }
+
+            return false; // No changes detected
+        } catch (error) {
+            console.error('Failed to check fiber changes:', error);
+            return true; // On error, assume there are changes to be safe
         }
     }
 

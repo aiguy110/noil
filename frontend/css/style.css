@@ -628,6 +628,10 @@ body {
     animation: spin 0.8s linear infinite;
 }
 
+.empty-state .spinner {
+    margin-bottom: 20px;
+}
+
 @keyframes spin {
     to {
         transform: rotate(360deg);
@@ -866,10 +870,25 @@ body {
     background-color: var(--border-color);
 }
 
+.nav-item-section-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+    font-weight: 600;
+}
+
+.nav-item-fiber-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
 .nav-item-type {
     font-weight: bold;
     color: var(--text-primary);
-    margin-bottom: 2px;
+    font-size: 12px;
 }
 
 .nav-item-id {
