@@ -76,7 +76,7 @@ class ConfigEditor {
         }
 
         // Confirm save
-        if (!confirm('Save configuration? Note: A restart is required for changes to take effect.')) {
+        if (!confirm('Save configuration? Note: Global config changes require a restart. Fiber types can be hot-reloaded separately.')) {
             return;
         }
 
@@ -90,7 +90,7 @@ class ConfigEditor {
 
             // Show restart reminder
             setTimeout(() => {
-                alert('Configuration has been saved.\n\nIMPORTANT: You must restart the Noil server for changes to take effect.');
+                alert('Configuration has been saved.\n\nIMPORTANT: You must restart the Noil server for global config changes to take effect.\n\nNote: Fiber type changes can be hot-reloaded in the Fiber Processing tab without restarting.');
             }, 500);
         } catch (error) {
             this.showStatus(`Error saving config: ${error.message}`, 'error');

@@ -175,6 +175,33 @@ pub trait Storage: Send + Sync {
 
     /// Update config state
     async fn update_config_state(&self, state: &ConfigState) -> Result<(), StorageError>;
+
+    // Reprocessing support
+    /// Query logs for reprocessing with optional time range filter
+    async fn query_logs_for_reprocessing(
+        &self,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        batch_size: usize,
+        offset: usize,
+    ) -> Result<Vec<StoredLog>, StorageError>;
+
+    /// Delete fiber memberships for a config version with optional time range
+    async fn delete_fiber_memberships(
+        &self,
+        config_version: u64,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+    ) -> Result<u64, StorageError>;
+
+    /// Delete fibers for a config version
+    async fn delete_fibers(
+        &self,
+        config_version: u64,
+    ) -> Result<u64, StorageError>;
+
+    /// Mark a config version as active (deactivates all others)
+    async fn mark_config_active(&self, version_hash: &str) -> Result<(), StorageError>;
 }
 
 /// Storage errors

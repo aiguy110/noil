@@ -200,6 +200,9 @@ impl Storage for DuckDbStorage {
             )?;
 
             // Create config_versions table
+            // Note: DuckDB has known limitations with self-referential foreign keys.
+            // We're removing the FK constraint and will enforce parent_hash integrity
+            // at the application level instead.
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS config_versions (
                     version_hash VARCHAR(64) PRIMARY KEY,
@@ -207,8 +210,7 @@ impl Storage for DuckDbStorage {
                     yaml_content TEXT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL,
                     source VARCHAR(16) NOT NULL,
-                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
-                    FOREIGN KEY (parent_hash) REFERENCES config_versions(version_hash)
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE
                 )",
                 [],
             )?;
@@ -862,12 +864,31 @@ impl Storage for DuckDbStorage {
             // Start a transaction to deactivate others and insert new version atomically
             conn.execute("BEGIN TRANSACTION", [])?;
 
-            // Deactivate all existing versions
-            match conn.execute("UPDATE config_versions SET is_active = FALSE WHERE is_active = TRUE", []) {
-                Ok(_) => {},
-                Err(e) => {
+            // Validate parent_hash exists if specified (application-level integrity check)
+            // We removed the database-level FK constraint due to DuckDB limitations with
+            // self-referential foreign keys during transactions
+            if let Some(ref parent) = version.parent_hash {
+                let mut stmt = conn.prepare("SELECT 1 FROM config_versions WHERE version_hash = ?")?;
+                let mut rows = stmt.query(duckdb::params![parent])?;
+                if rows.next()?.is_none() {
                     conn.execute("ROLLBACK", []).ok();
-                    return Err(e.into());
+                    return Err(StorageError::NotFound(format!(
+                        "Parent config version not found: {}",
+                        parent
+                    )));
+                }
+            }
+
+            // ONLY deactivate existing versions if we're inserting an active version
+            // This prevents the bug where inserting inactive versions (e.g., from UI)
+            // would deactivate the current active version, breaking the parent chain
+            if version.is_active {
+                match conn.execute("UPDATE config_versions SET is_active = FALSE WHERE is_active = TRUE", []) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        conn.execute("ROLLBACK", []).ok();
+                        return Err(e.into());
+                    }
                 }
             }
 
@@ -1112,6 +1133,238 @@ impl Storage for DuckDbStorage {
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
     }
+
+    async fn query_logs_for_reprocessing(
+        &self,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        batch_size: usize,
+        offset: usize,
+    ) -> Result<Vec<StoredLog>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Build query with optional time range filters
+            let query = match (start, end) {
+                (Some(_), Some(_)) => {
+                    "SELECT log_id, epoch_us(timestamp), source_id, raw_text, epoch_us(ingestion_time), config_version
+                     FROM raw_logs
+                     WHERE timestamp >= to_timestamp(? / 1000000.0) AND timestamp <= to_timestamp(? / 1000000.0)
+                     ORDER BY timestamp
+                     LIMIT ? OFFSET ?"
+                }
+                (Some(_), None) => {
+                    "SELECT log_id, epoch_us(timestamp), source_id, raw_text, epoch_us(ingestion_time), config_version
+                     FROM raw_logs
+                     WHERE timestamp >= to_timestamp(? / 1000000.0)
+                     ORDER BY timestamp
+                     LIMIT ? OFFSET ?"
+                }
+                (None, Some(_)) => {
+                    "SELECT log_id, epoch_us(timestamp), source_id, raw_text, epoch_us(ingestion_time), config_version
+                     FROM raw_logs
+                     WHERE timestamp <= to_timestamp(? / 1000000.0)
+                     ORDER BY timestamp
+                     LIMIT ? OFFSET ?"
+                }
+                (None, None) => {
+                    "SELECT log_id, epoch_us(timestamp), source_id, raw_text, epoch_us(ingestion_time), config_version
+                     FROM raw_logs
+                     ORDER BY timestamp
+                     LIMIT ? OFFSET ?"
+                }
+            };
+
+            let mut stmt = conn.prepare(query)?;
+
+            let rows = match (start, end) {
+                (Some(s), Some(e)) => {
+                    stmt.query_map(
+                        duckdb::params![s.timestamp_micros(), e.timestamp_micros(), batch_size as i64, offset as i64],
+                        parse_stored_log_row,
+                    )?
+                }
+                (Some(s), None) | (None, Some(s)) => {
+                    stmt.query_map(
+                        duckdb::params![s.timestamp_micros(), batch_size as i64, offset as i64],
+                        parse_stored_log_row,
+                    )?
+                }
+                (None, None) => {
+                    stmt.query_map(
+                        duckdb::params![batch_size as i64, offset as i64],
+                        parse_stored_log_row,
+                    )?
+                }
+            };
+
+            let mut logs = Vec::new();
+            for row in rows {
+                logs.push(row?);
+            }
+            Ok(logs)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn delete_fiber_memberships(
+        &self,
+        _config_version: u64,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+    ) -> Result<u64, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            let rows_affected = if start.is_some() || end.is_some() {
+                // With time range filter, need to join with raw_logs
+                // Note: Delete ALL fiber memberships in the time range, regardless of config_version.
+                // This ensures reprocessing clears out memberships from previous config versions.
+                let query = match (start, end) {
+                    (Some(_), Some(_)) => {
+                        "DELETE FROM fiber_memberships
+                         WHERE log_id IN (
+                             SELECT log_id FROM raw_logs
+                             WHERE timestamp >= to_timestamp(? / 1000000.0)
+                             AND timestamp <= to_timestamp(? / 1000000.0)
+                         )"
+                    }
+                    (Some(_), None) => {
+                        "DELETE FROM fiber_memberships
+                         WHERE log_id IN (
+                             SELECT log_id FROM raw_logs
+                             WHERE timestamp >= to_timestamp(? / 1000000.0)
+                         )"
+                    }
+                    (None, Some(_)) => {
+                        "DELETE FROM fiber_memberships
+                         WHERE log_id IN (
+                             SELECT log_id FROM raw_logs
+                             WHERE timestamp <= to_timestamp(? / 1000000.0)
+                         )"
+                    }
+                    (None, None) => unreachable!(),
+                };
+
+                match (start, end) {
+                    (Some(s), Some(e)) => {
+                        conn.execute(query, duckdb::params![s.timestamp_micros(), e.timestamp_micros()])?
+                    }
+                    (Some(s), None) | (None, Some(s)) => {
+                        conn.execute(query, duckdb::params![s.timestamp_micros()])?
+                    }
+                    (None, None) => unreachable!(),
+                }
+            } else {
+                // No time range filter, delete ALL fiber memberships.
+                // This ensures reprocessing clears out memberships from all config versions.
+                conn.execute(
+                    "DELETE FROM fiber_memberships",
+                    [],
+                )?
+            };
+
+            Ok::<u64, StorageError>(rows_affected as u64)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn delete_fibers(
+        &self,
+        _config_version: u64,
+    ) -> Result<u64, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Delete ALL fibers, not just those matching the current config version.
+            // This ensures reprocessing clears out fibers from previous config versions,
+            // preventing duplicates when fiber rules change across hot reloads.
+            let rows_affected = conn.execute(
+                "DELETE FROM fibers",
+                [],
+            )?;
+
+            Ok::<u64, StorageError>(rows_affected as u64)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn mark_config_active(&self, version_hash: &str) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let version_hash = version_hash.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Start a transaction to deactivate others and activate new version atomically
+            conn.execute("BEGIN TRANSACTION", [])?;
+
+            // Deactivate all existing versions
+            match conn.execute("UPDATE config_versions SET is_active = FALSE WHERE is_active = TRUE", []) {
+                Ok(_) => {},
+                Err(e) => {
+                    conn.execute("ROLLBACK", []).ok();
+                    return Err(e.into());
+                }
+            }
+
+            // Activate the specified version
+            let rows_affected = conn.execute(
+                "UPDATE config_versions SET is_active = TRUE WHERE version_hash = ?",
+                duckdb::params![version_hash],
+            )?;
+
+            // Check if the version exists
+            if rows_affected == 0 {
+                conn.execute("ROLLBACK", [])?;
+                return Err(StorageError::NotFound(format!(
+                    "Config version not found: {}",
+                    version_hash
+                )));
+            }
+
+            conn.execute("COMMIT", [])?;
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+}
+
+// Helper function to parse a row into StoredLog
+fn parse_stored_log_row(row: &duckdb::Row) -> Result<StoredLog, duckdb::Error> {
+    Ok(StoredLog {
+        log_id: Uuid::parse_str(&row.get::<_, String>(0)?)
+            .map_err(|e| duckdb::Error::FromSqlConversionFailure(
+                0,
+                duckdb::types::Type::Text,
+                Box::new(e),
+            ))?,
+        timestamp: DateTime::from_timestamp_micros(row.get::<_, i64>(1)?)
+            .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                1,
+                duckdb::types::Type::BigInt,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+            ))?,
+        source_id: row.get(2)?,
+        raw_text: row.get(3)?,
+        ingestion_time: DateTime::from_timestamp_micros(row.get::<_, i64>(4)?)
+            .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                4,
+                duckdb::types::Type::BigInt,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+            ))?,
+        config_version: row.get(5)?,
+    })
 }
 
 #[cfg(test)]

@@ -101,26 +101,27 @@ impl FiberTypeProcessor {
         let matching_fiber_ids = self.find_matching_fibers(&all_attrs);
 
         // Step 6: Create, join, or merge fibers
-        let target_fiber_id = if matching_fiber_ids.is_empty() {
+        let (target_fiber_id, is_new_fiber) = if matching_fiber_ids.is_empty() {
             // Create new fiber
             let fiber = OpenFiber::new(self.fiber_type.name.clone(), log.timestamp);
             let fiber_id = fiber.fiber_id;
             self.open_fibers.insert(fiber_id, fiber);
-
-            // Record new fiber
-            result.new_fibers.push(self.fiber_to_record(fiber_id));
-
-            fiber_id
+            (fiber_id, true)
         } else if matching_fiber_ids.len() == 1 {
             // Join existing fiber
-            matching_fiber_ids[0]
+            (matching_fiber_ids[0], false)
         } else {
             // Merge multiple fibers
-            self.merge_fibers(&matching_fiber_ids, &mut result)
+            (self.merge_fibers(&matching_fiber_ids, &mut result), false)
         };
 
         // Step 7: Add log to fiber, update keys and attributes
         self.update_fiber_with_attributes(target_fiber_id, log, &all_attrs);
+
+        // Record new fiber AFTER attributes are set (so FiberRecord has correct attributes)
+        if is_new_fiber {
+            result.new_fibers.push(self.fiber_to_record(target_fiber_id));
+        }
 
         // Record membership
         result.memberships.push(FiberMembership {

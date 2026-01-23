@@ -7,7 +7,7 @@ use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Errors that can occur during pipeline operation
@@ -57,13 +57,17 @@ impl From<ProcessResult> for FiberUpdate {
 ///
 /// Receives log records from the sequencer, writes raw logs to storage,
 /// processes logs through fiber rules, and sends fiber updates to the writer.
+///
+/// The processor is shared via Arc<RwLock<>> to enable hot-reload from the web server.
+/// During normal operation, this function holds a write lock while processing each log.
+/// Hot-reload requests will wait for the lock between log processing.
 pub async fn run_processor(
     mut input: mpsc::Receiver<LogRecord>,
     output: mpsc::Sender<FiberUpdate>,
-    mut processor: FiberProcessor,
+    processor: Arc<RwLock<FiberProcessor>>,
+    config_version: Arc<RwLock<u64>>,
     storage: Arc<dyn Storage>,
     config: &Config,
-    config_version: u64,
     shared_fiber_state: Option<crate::storage::checkpoint::SharedFiberProcessorState>,
 ) -> Result<(), PipelineError> {
     let batch_size = config.storage.batch_size;
@@ -86,6 +90,9 @@ pub async fn run_processor(
                             "Processing log record"
                         );
 
+                        // Read current config version
+                        let current_version = *config_version.read().await;
+
                         // Create stored log
                         let stored_log = StoredLog {
                             log_id: log.id,
@@ -93,7 +100,7 @@ pub async fn run_processor(
                             source_id: log.source_id.clone(),
                             raw_text: log.raw_text.clone(),
                             ingestion_time: Utc::now(),
-                            config_version,
+                            config_version: current_version,
                         };
 
                         // Add to batch
@@ -106,15 +113,21 @@ pub async fn run_processor(
                             log_batch.clear();
                         }
 
+                        // Acquire write lock to process log (releases between logs for hot-reload)
+                        let mut processor_guard = processor.write().await;
+
                         // Process for fibers
-                        let results = processor.process_log(&log);
+                        let results = processor_guard.process_log(&log);
 
                         // Update shared checkpoint state if enabled
                         if let Some(ref shared_state) = shared_fiber_state {
                             if let Ok(mut guard) = shared_state.lock() {
-                                *guard = processor.create_checkpoint();
+                                *guard = processor_guard.create_checkpoint();
                             }
                         }
+
+                        // Release lock before sending to channel
+                        drop(processor_guard);
 
                         // Send fiber updates
                         for result in results {
@@ -155,17 +168,21 @@ pub async fn run_processor(
         info!(count = log_batch.len(), "Final log batch flush");
     }
 
-    // Flush all open fibers
-    let flush_results = processor.flush();
+    // Acquire write lock to flush all open fibers
+    let mut processor_guard = processor.write().await;
+    let flush_results = processor_guard.flush();
 
     // Update shared checkpoint state after flush to reflect that all fibers are now closed.
     // This prevents a race condition where the checkpoint is saved (after sequencer completion)
     // before the fiber processor has flushed, leading to stale open fibers in the checkpoint.
     if let Some(ref shared_state) = shared_fiber_state {
         if let Ok(mut guard) = shared_state.lock() {
-            *guard = processor.create_checkpoint();
+            *guard = processor_guard.create_checkpoint();
         }
     }
+
+    let open_fibers = processor_guard.total_open_fibers();
+    drop(processor_guard);
 
     for result in flush_results {
         if !result.memberships.is_empty()
@@ -179,7 +196,7 @@ pub async fn run_processor(
     }
 
     info!(
-        open_fibers = processor.total_open_fibers(),
+        open_fibers = open_fibers,
         "Fiber processor shutdown complete"
     );
 
@@ -397,7 +414,10 @@ mod tests {
         let storage = Arc::new(DuckDbStorage::in_memory().unwrap());
         storage.init_schema().await.unwrap();
 
-        let processor = FiberProcessor::from_config(&config, 1).unwrap();
+        let processor = Arc::new(tokio::sync::RwLock::new(
+            FiberProcessor::from_config(&config, 1).unwrap()
+        ));
+        let config_version = Arc::new(tokio::sync::RwLock::new(1u64));
 
         let (input_tx, input_rx) = mpsc::channel(100);
         let (output_tx, mut output_rx) = mpsc::channel(100);
@@ -405,8 +425,10 @@ mod tests {
         // Spawn processor task
         let storage_clone = storage.clone();
         let config_clone = config.clone();
+        let processor_clone = Arc::clone(&processor);
+        let version_clone = Arc::clone(&config_version);
         let processor_handle = tokio::spawn(async move {
-            run_processor(input_rx, output_tx, processor, storage_clone, &config_clone, 1, None).await
+            run_processor(input_rx, output_tx, processor_clone, version_clone, storage_clone, &config_clone, None).await
         });
 
         // Send a log

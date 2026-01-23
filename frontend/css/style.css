@@ -1293,3 +1293,353 @@ body {
 .config-history-modal .history-item:hover {
     background-color: rgba(255, 255, 255, 0.05);
 }
+
+/* ===================================================================
+   Fiber Processing Editor Styles
+   =================================================================== */
+
+.fiber-processing-layout {
+    display: flex;
+    gap: 20px;
+    height: 550px;
+}
+
+.fiber-type-sidebar {
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border-color);
+    padding-right: 20px;
+}
+
+.fiber-type-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.fiber-type-header h4 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.fiber-type-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.fiber-type-item {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background-color 0.2s;
+}
+
+.fiber-type-item:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.fiber-type-item.selected {
+    background-color: var(--accent-color);
+    color: white;
+}
+
+.fiber-type-item.selected .badge {
+    background: rgba(255, 255, 255, 0.3);
+    color: white;
+}
+
+.fiber-type-name {
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fiber-type-item .badge {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.fiber-editor-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.fiber-editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.fiber-editor-header h4 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.fiber-editor-header h4 span {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.fiber-editor-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.fiber-yaml-editor {
+    flex: 1;
+    width: 100%;
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 12px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: none;
+    tab-size: 2;
+}
+
+.fiber-yaml-editor:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.fiber-yaml-editor:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.fiber-status {
+    padding: 10px 12px;
+    margin: 12px 0;
+    border-radius: 4px;
+    font-size: 13px;
+    display: none;
+}
+
+.fiber-status-success {
+    background-color: var(--success-bg, #1b4d3e);
+    color: var(--success, #4caf50);
+    border-left: 3px solid var(--success, #4caf50);
+}
+
+.fiber-status-error {
+    background-color: var(--error-bg, #4d1b1b);
+    color: var(--error, #f44336);
+    border-left: 3px solid var(--error, #f44336);
+}
+
+.fiber-status-info {
+    background-color: var(--info-bg, #1b3a4d);
+    color: var(--info, #2196f3);
+    border-left: 3px solid var(--info, #2196f3);
+}
+
+.reprocess-section {
+    margin-top: 16px;
+    padding: 16px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.reprocess-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.reprocess-section p {
+    margin: 0 0 12px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.reprocess-progress {
+    margin-top: 16px;
+}
+
+.progress-bar {
+    height: 20px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: var(--accent-color);
+    transition: width 0.3s ease;
+    border-radius: 4px;
+}
+
+.progress-stats {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* Button variants */
+.btn-small {
+    padding: 4px 10px;
+    font-size: 12px;
+    margin-top: 0;
+    width: auto;
+}
+
+.btn-success {
+    background-color: #28a745;
+    color: white;
+}
+
+.btn-success:hover {
+    background-color: #218838;
+}
+
+.btn-success:disabled {
+    background-color: #1e7e34;
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.btn-success-muted {
+    background-color: #1e7e34;
+    opacity: 0.7;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+}
+
+.btn-danger:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Reprocess modal */
+.reprocess-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10001;
+}
+
+.reprocess-modal-content {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 24px;
+    width: 450px;
+    max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.reprocess-modal-content h3 {
+    margin: 0 0 8px 0;
+    font-size: 18px;
+    color: var(--text-primary);
+}
+
+.reprocess-modal-content > p {
+    margin: 0 0 20px 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.reprocess-option {
+    margin-bottom: 16px;
+    padding: 12px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+}
+
+.reprocess-option label {
+    display: block;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.reprocess-option input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.option-help {
+    margin: 4px 0 0 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.time-range-inputs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.time-range-inputs input {
+    flex: 1;
+    padding: 8px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.time-range-inputs input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.time-range-inputs span {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.reprocess-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.reprocess-modal-actions .btn {
+    width: auto;
+    margin-top: 0;
+}

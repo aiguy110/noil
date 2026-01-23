@@ -22,6 +22,7 @@ class NoilApp {
         this.selectedLogTimestamp = null; // Timestamp of selected log line
         this.selectedLogSourceId = null; // Source ID of selected log line
         this.logFibersCache = {};       // Map: logId -> fiber list
+        this.fiberProcessingEditor = null; // Fiber processing editor instance
 
         this.init();
     }
@@ -88,7 +89,7 @@ class NoilApp {
         const tabContents = document.querySelectorAll('.modal-tab-content');
 
         tabButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', async () => {
                 const tabName = btn.dataset.modalTab;
 
                 // Update active tab button
@@ -103,6 +104,12 @@ class NoilApp {
                         content.classList.remove('active');
                     }
                 });
+
+                // Initialize fiber processing editor on first open
+                if (tabName === 'fiber-processing' && !this.fiberProcessingEditor) {
+                    this.fiberProcessingEditor = new FiberProcessingEditor(api);
+                    await this.fiberProcessingEditor.init();
+                }
             });
         });
     }

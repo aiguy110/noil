@@ -6,12 +6,16 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::config::diff::create_diff_with_context;
-use crate::config::types::FiberTypeConfig;
+use crate::config::types::{Config, FiberTypeConfig};
 use crate::config::version::compute_config_hash;
+use crate::fiber::processor::FiberProcessor;
+use crate::reprocessing::{ReprocessProgress, ReprocessState, ReprocessStatus};
 use crate::storage::traits::{ConfigSource, ConfigVersion, FiberRecord, Storage, StorageError, StoredLog};
 
 /// Shared application state
@@ -19,6 +23,12 @@ use crate::storage::traits::{ConfigSource, ConfigVersion, FiberRecord, Storage, 
 pub struct AppState {
     pub storage: Arc<dyn Storage>,
     pub fiber_types: Arc<std::collections::HashMap<String, FiberTypeConfig>>,
+    pub fiber_processor: Arc<RwLock<FiberProcessor>>,
+    pub config: Arc<RwLock<Config>>,
+    pub config_version: Arc<RwLock<u64>>,
+    pub config_path: PathBuf,
+    pub config_yaml: Arc<RwLock<String>>,
+    pub reprocess_state: Arc<RwLock<Option<ReprocessState>>>,
 }
 
 // ============================================================================
@@ -173,6 +183,73 @@ pub struct ErrorDetail {
 }
 
 // ============================================================================
+// Fiber Type Management Types
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct FiberTypeResponse {
+    pub name: String,
+    pub yaml_content: String,
+    pub is_source_fiber: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateFiberTypeRequest {
+    pub yaml_content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateFiberTypeResponse {
+    pub new_version_hash: String,
+    pub validation_warnings: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFiberTypeRequest {
+    pub name: String,
+    pub yaml_content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateFiberTypeResponse {
+    pub name: String,
+    pub new_version_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SuccessResponse {
+    pub message: String,
+}
+
+// ============================================================================
+// Reprocessing Types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TimeRange {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StartReprocessRequest {
+    pub time_range: Option<TimeRange>,
+    pub clear_old_results: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StartReprocessResponse {
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReprocessStatusResponse {
+    pub status: String,
+    pub progress: Option<ReprocessProgress>,
+    pub error: Option<String>,
+}
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -180,6 +257,7 @@ pub struct ErrorDetail {
 pub enum ApiError {
     NotFound(String),
     BadRequest(String),
+    Conflict(String),
     Internal(String),
 }
 
@@ -188,6 +266,7 @@ impl IntoResponse for ApiError {
         let (status, code, message) = match self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg),
         };
 
@@ -540,9 +619,9 @@ pub async fn update_config(
         ));
     }
 
-    // Note: For MVP, we validate the config but don't save it to the database.
-    // The user needs to manually update the config file and restart.
-    // Future enhancement: Add insert_config_version_inactive method to save without activating.
+    // Note: We validate the config but don't save it to the database.
+    // Global config changes (sources, pipeline, storage, web) require a restart to take effect.
+    // Only fiber_types support hot-reloading. The user must manually update the config file and restart.
 
     Ok(Json(ConfigVersionDto::from(new_version)))
 }
@@ -577,3 +656,870 @@ pub async fn get_config_diff(
         diff,
     }))
 }
+
+// ============================================================================
+// Fiber Type Management API
+// ============================================================================
+
+/// GET /api/fiber-types/:name
+pub async fn get_fiber_type(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<FiberTypeResponse>, ApiError> {
+    let config = state.config.read().await;
+    let fiber_type = config
+        .fiber_types
+        .get(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Fiber type not found: {}", name)))?;
+
+    let is_source_fiber = fiber_type.is_source_fiber;
+
+    // Get the YAML from the active database version (source of truth after UI changes)
+    // This ensures we show the latest config, not the file version from startup
+    let active_version = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .ok_or_else(|| ApiError::Internal("No active config version found".to_string()))?;
+
+    let yaml = extract_fiber_type_yaml_with_name(&active_version.yaml_content, &name)?;
+
+    Ok(Json(FiberTypeResponse {
+        name,
+        yaml_content: yaml,
+        is_source_fiber,
+    }))
+}
+
+/// PUT /api/fiber-types/:name
+pub async fn update_fiber_type(
+    State(state): State<AppState>,
+    Path(original_name): Path<String>,
+    Json(req): Json<UpdateFiberTypeRequest>,
+) -> Result<Json<UpdateFiberTypeResponse>, ApiError> {
+    // 1. Check if this is an auto-generated source fiber
+    let config = state.config.read().await;
+    if let Some(fiber_type) = config.fiber_types.get(&original_name) {
+        if fiber_type.is_source_fiber {
+            return Err(ApiError::BadRequest(
+                "Cannot edit auto-generated source fiber types. These are automatically created from sources.".to_string()
+            ));
+        }
+    } else {
+        return Err(ApiError::NotFound(format!("Fiber type '{}' not found in config", original_name)));
+    }
+    drop(config);
+
+    // 2. Parse the incoming YAML to extract the fiber type name and config
+    // The YAML should be in the format "fiber_name:\n  description: ..."
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&req.yaml_content)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid YAML: {}", e)))?;
+
+    let yaml_map = yaml_value.as_mapping()
+        .ok_or_else(|| ApiError::BadRequest("YAML must be a mapping with one fiber type".to_string()))?;
+
+    if yaml_map.len() != 1 {
+        return Err(ApiError::BadRequest(
+            "YAML must contain exactly one fiber type definition".to_string()
+        ));
+    }
+
+    let (new_name_value, fiber_config_value) = yaml_map.iter().next().unwrap();
+    let new_name = new_name_value.as_str()
+        .ok_or_else(|| ApiError::BadRequest("Fiber type name must be a string".to_string()))?
+        .to_string();
+
+    // Validate the fiber type configuration
+    let new_fiber_type: FiberTypeConfig = serde_yaml::from_value(fiber_config_value.clone())
+        .map_err(|e| ApiError::BadRequest(format!("Invalid fiber type config: {}", e)))?;
+
+    // 3. Get the current config YAML string
+    let mut config_yaml_guard = state.config_yaml.write().await;
+    let current_yaml = config_yaml_guard.clone();
+
+    // 4. Handle rename vs update
+    let updated_yaml = if new_name != original_name {
+        // Rename: delete old fiber type and add new one
+        tracing::info!(
+            old_name = %original_name,
+            new_name = %new_name,
+            "Renaming fiber type"
+        );
+
+        // Check if target name already exists
+        let temp_config: Config = serde_yaml::from_str(&current_yaml)
+            .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
+        if temp_config.fiber_types.contains_key(&new_name) {
+            return Err(ApiError::BadRequest(format!(
+                "Cannot rename: fiber type '{}' already exists",
+                new_name
+            )));
+        }
+
+        let yaml_after_delete = delete_fiber_type_from_yaml(&current_yaml, &original_name)?;
+        add_fiber_type_to_yaml(&yaml_after_delete, &new_name, &req.yaml_content)?
+    } else {
+        // Update: replace existing fiber type
+        update_fiber_type_in_yaml(&current_yaml, &original_name, &req.yaml_content)?
+    };
+
+    // 5. Parse the updated YAML to validate it
+    let _updated_config: Config = serde_yaml::from_str(&updated_yaml)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse updated config: {}", e)))?;
+
+    // 6. Compute new version hash
+    let new_hash = compute_config_hash(&updated_yaml);
+
+    // 7. Update in-memory state
+    *config_yaml_guard = updated_yaml.clone();
+    let mut config = state.config.write().await;
+
+    if new_name != original_name {
+        // Remove old name, add new name
+        config.fiber_types.remove(&original_name);
+    }
+    config.fiber_types.insert(new_name.clone(), new_fiber_type);
+
+    // 8. Write new config version to database (DB-only, no file write)
+    let parent_hash = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .map(|v| v.version_hash);
+
+    let config_version = ConfigVersion {
+        version_hash: new_hash.clone(),
+        parent_hash,
+        yaml_content: updated_yaml,
+        created_at: Utc::now(),
+        source: ConfigSource::UI,
+        is_active: false, // Not active until hot-reload
+    };
+
+    state.storage.insert_config_version(&config_version).await?;
+
+    Ok(Json(UpdateFiberTypeResponse {
+        new_version_hash: new_hash,
+        validation_warnings: vec![],
+    }))
+}
+
+/// POST /api/fiber-types/:name/hot-reload
+pub async fn hot_reload_fiber_type(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<SuccessResponse>, ApiError> {
+    // 1. Check if reprocessing is running
+    {
+        let reprocess_guard = state.reprocess_state.read().await;
+        if let Some(reprocess) = reprocess_guard.as_ref() {
+            if matches!(reprocess.status, ReprocessStatus::Running) {
+                return Err(ApiError::Conflict(
+                    "Cannot hot-reload while reprocessing is running".to_string(),
+                ));
+            }
+        }
+    }
+
+    // 2. Acquire write locks (blocks in-flight log processing)
+    let mut processor_guard = state.fiber_processor.write().await;
+    let mut version_guard = state.config_version.write().await;
+    let config_guard = state.config.read().await;
+
+    // 3. Flush old processor (closes all open fibers)
+    let flush_results = processor_guard.flush();
+
+    // Write flush results to storage
+    for result in flush_results {
+        for fiber in &result.new_fibers {
+            state.storage.write_fiber(fiber).await?;
+        }
+        for fiber in &result.updated_fibers {
+            state.storage.update_fiber(fiber).await?;
+        }
+        if !result.memberships.is_empty() {
+            state.storage.write_memberships(&result.memberships).await?;
+        }
+    }
+
+    // 4. Get the current config YAML from the active database version
+    // CRITICAL: We must use the stored YAML string, NOT re-serialize the config struct,
+    // because re-serialization loses comments and formatting, producing a different hash.
+    // See specs/CONFIG_SYSTEM.md for details on the YAML-as-ground-truth paradigm.
+    let active_version = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .ok_or_else(|| ApiError::Internal("No active config version found".to_string()))?;
+
+    let yaml = active_version.yaml_content.clone();
+
+    // Update in-memory YAML to match database (in case it was stale from startup)
+    {
+        let mut config_yaml_guard = state.config_yaml.write().await;
+        *config_yaml_guard = yaml.clone();
+    }
+
+    // Compute hash from the stored YAML (should match the active version hash)
+    let new_hash = compute_config_hash(&yaml);
+    let new_version = new_hash
+        .parse::<u64>()
+        .unwrap_or_else(|_| yaml.as_bytes().iter().map(|&b| b as u64).sum());
+
+    // 5. Create new processor
+    let new_processor = FiberProcessor::from_config(&*config_guard, new_version)
+        .map_err(|e| ApiError::Internal(format!("Failed to create processor: {}", e)))?;
+
+    // 6. Replace processor and version
+    *processor_guard = new_processor;
+    *version_guard = new_version;
+
+    // 7. Mark new version as active in database
+    state.storage.mark_config_active(&new_hash).await?;
+
+    Ok(Json(SuccessResponse {
+        message: format!("Hot reload complete for fiber type '{}'", name),
+    }))
+}
+
+/// DELETE /api/fiber-types/:name
+pub async fn delete_fiber_type(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<SuccessResponse>, ApiError> {
+    // 1. Check if fiber type exists
+    let config = state.config.read().await;
+    if !config.fiber_types.contains_key(&name) {
+        return Err(ApiError::NotFound(format!(
+            "Fiber type not found: {}",
+            name
+        )));
+    }
+
+    // Check if it's a source fiber (auto-generated)
+    if let Some(fiber_type) = config.fiber_types.get(&name) {
+        if fiber_type.is_source_fiber {
+            return Err(ApiError::BadRequest(
+                "Cannot delete auto-generated source fiber types".to_string(),
+            ));
+        }
+    }
+    drop(config);
+
+    // 2. Get the current config YAML string
+    let mut config_yaml_guard = state.config_yaml.write().await;
+    let current_yaml = config_yaml_guard.clone();
+
+    // 3. Delete the fiber type from the YAML string (preserves comments)
+    let updated_yaml = delete_fiber_type_from_yaml(&current_yaml, &name)?;
+
+    // 4. Parse the updated YAML to validate it
+    let _updated_config: Config = serde_yaml::from_str(&updated_yaml)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse updated config: {}", e)))?;
+
+    // 5. Compute new version hash
+    let new_hash = compute_config_hash(&updated_yaml);
+
+    // 6. Update in-memory state
+    *config_yaml_guard = updated_yaml.clone();
+    let mut config = state.config.write().await;
+    config.fiber_types.remove(&name);
+
+    // 7. Write new config version to database (DB-only, no file write)
+    let parent_hash = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .map(|v| v.version_hash);
+
+    let config_version = ConfigVersion {
+        version_hash: new_hash.clone(),
+        parent_hash,
+        yaml_content: updated_yaml,
+        created_at: Utc::now(),
+        source: ConfigSource::UI,
+        is_active: false,
+    };
+
+    state.storage.insert_config_version(&config_version).await?;
+
+    Ok(Json(SuccessResponse {
+        message: format!("Fiber type '{}' deleted (hot-reload required)", name),
+    }))
+}
+
+/// POST /api/fiber-types
+pub async fn create_fiber_type(
+    State(state): State<AppState>,
+    Json(req): Json<CreateFiberTypeRequest>,
+) -> Result<Json<CreateFiberTypeResponse>, ApiError> {
+    // 1. Parse and validate the incoming fiber type YAML
+    let new_fiber_type: FiberTypeConfig = serde_yaml::from_str(&req.yaml_content)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid YAML: {}", e)))?;
+
+    // 2. Check if fiber type already exists
+    let config = state.config.read().await;
+    if config.fiber_types.contains_key(&req.name) {
+        return Err(ApiError::Conflict(format!(
+            "Fiber type '{}' already exists",
+            req.name
+        )));
+    }
+    drop(config);
+
+    // 3. Get the current config YAML string
+    let mut config_yaml_guard = state.config_yaml.write().await;
+    let current_yaml = config_yaml_guard.clone();
+
+    // 4. Build full YAML with name line included (indent content by 2 spaces)
+    let indented_content = req.yaml_content
+        .lines()
+        .map(|line| if line.is_empty() { String::new() } else { format!("  {}", line) })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let full_yaml = format!("{}:\n{}", req.name, indented_content);
+
+    // 5. Add the fiber type to the YAML string (preserves comments)
+    let updated_yaml = add_fiber_type_to_yaml(&current_yaml, &req.name, &full_yaml)?;
+
+    // 5. Parse the updated YAML to validate it
+    let _updated_config: Config = serde_yaml::from_str(&updated_yaml)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse updated config: {}", e)))?;
+
+    // 6. Compute new version hash
+    let new_hash = compute_config_hash(&updated_yaml);
+
+    // 7. Update in-memory state
+    *config_yaml_guard = updated_yaml.clone();
+    let mut config = state.config.write().await;
+    config.fiber_types.insert(req.name.clone(), new_fiber_type);
+
+    // 8. Write new config version to database (DB-only, no file write)
+    let parent_hash = state
+        .storage
+        .get_active_config_version()
+        .await?
+        .map(|v| v.version_hash);
+
+    let config_version = ConfigVersion {
+        version_hash: new_hash.clone(),
+        parent_hash,
+        yaml_content: updated_yaml,
+        created_at: Utc::now(),
+        source: ConfigSource::UI,
+        is_active: false,
+    };
+
+    state.storage.insert_config_version(&config_version).await?;
+
+    Ok(Json(CreateFiberTypeResponse {
+        name: req.name,
+        new_version_hash: new_hash,
+    }))
+}
+
+// ============================================================================
+// Reprocessing API
+// ============================================================================
+
+/// POST /api/reprocess
+pub async fn start_reprocessing(
+    State(state): State<AppState>,
+    Json(req): Json<StartReprocessRequest>,
+) -> Result<Json<StartReprocessResponse>, ApiError> {
+    use crate::reprocessing::run_reprocessing;
+
+    // 1. Check if reprocessing is already active
+    let mut reprocess_state_guard = state.reprocess_state.write().await;
+    if let Some(existing) = reprocess_state_guard.as_ref() {
+        if matches!(existing.status, ReprocessStatus::Running) {
+            return Err(ApiError::Conflict(
+                "Reprocessing already in progress".to_string(),
+            ));
+        }
+    }
+
+    // 2. Create reprocess state
+    let task_id = Uuid::new_v4();
+    let config = state.config.read().await.clone();
+    let version = *state.config_version.read().await;
+
+    let time_range = req.time_range.map(|r| (r.start, r.end));
+
+    let reprocess_state = Arc::new(RwLock::new(ReprocessState {
+        task_id,
+        started_at: Utc::now(),
+        status: ReprocessStatus::Running,
+        config_version: version,
+        time_range,
+        clear_old_results: req.clear_old_results,
+        progress: ReprocessProgress::default(),
+    }));
+
+    *reprocess_state_guard = Some((*reprocess_state.read().await).clone());
+    drop(reprocess_state_guard); // Release lock before spawning
+
+    // 3. Spawn background task
+    let storage = Arc::clone(&state.storage);
+    let processor_lock = Arc::clone(&state.fiber_processor);
+    let state_lock = Arc::clone(&state.reprocess_state);
+
+    tokio::spawn(async move {
+        // Acquire write lock on processor (pauses live ingestion)
+        let _processor_guard = processor_lock.write().await;
+
+        // Run reprocessing
+        let result = run_reprocessing(
+            storage,
+            config,
+            version,
+            time_range,
+            req.clear_old_results,
+            reprocess_state,
+        )
+        .await;
+
+        // Update state with result
+        let mut state_guard = state_lock.write().await;
+        if let Some(s) = state_guard.as_mut() {
+            match result {
+                Ok(_) => s.status = ReprocessStatus::Completed,
+                Err(e) => s.status = ReprocessStatus::Failed(e.to_string()),
+            }
+        }
+    });
+
+    Ok(Json(StartReprocessResponse { task_id }))
+}
+
+/// GET /api/reprocess/status
+pub async fn get_reprocess_status(
+    State(state): State<AppState>,
+) -> Result<Json<ReprocessStatusResponse>, ApiError> {
+    let state_guard = state.reprocess_state.read().await;
+
+    match state_guard.as_ref() {
+        Some(s) => Ok(Json(ReprocessStatusResponse {
+            status: match s.status {
+                ReprocessStatus::Running => "running".to_string(),
+                ReprocessStatus::Completed => "completed".to_string(),
+                ReprocessStatus::Failed(_) => "failed".to_string(),
+                ReprocessStatus::Cancelled => "cancelled".to_string(),
+            },
+            progress: Some(s.progress.clone()),
+            error: match &s.status {
+                ReprocessStatus::Failed(e) => Some(e.clone()),
+                _ => None,
+            },
+        })),
+        None => Ok(Json(ReprocessStatusResponse {
+            status: "none".to_string(),
+            progress: None,
+            error: None,
+        })),
+    }
+}
+
+/// POST /api/reprocess/cancel
+pub async fn cancel_reprocessing(
+    State(state): State<AppState>,
+) -> Result<Json<SuccessResponse>, ApiError> {
+    let mut state_guard = state.reprocess_state.write().await;
+
+    if let Some(s) = state_guard.as_mut() {
+        if matches!(s.status, ReprocessStatus::Running) {
+            s.status = ReprocessStatus::Cancelled;
+            Ok(Json(SuccessResponse {
+                message: "Reprocessing cancelled".to_string(),
+            }))
+        } else {
+            Err(ApiError::BadRequest(
+                "No active reprocessing to cancel".to_string(),
+            ))
+        }
+    } else {
+        Err(ApiError::NotFound("No reprocessing found".to_string()))
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Update a fiber type in the config YAML string while preserving comments
+/// The new_fiber_yaml should include the fiber type name line (e.g., "request_trace:\n  description: ...")
+fn update_fiber_type_in_yaml(yaml: &str, name: &str, new_fiber_yaml: &str) -> Result<String, ApiError> {
+    // Find the fiber_types section and the specific fiber type
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut in_fiber_types = false;
+    let mut in_target_fiber = false;
+    let mut found_target = false;
+    let mut fiber_indent = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // Check if we're entering fiber_types section
+        if trimmed.starts_with("fiber_types:") {
+            in_fiber_types = true;
+            tracing::debug!(line_num = i, "Found fiber_types section");
+            result.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        // If we're in fiber_types, look for our target fiber
+        if in_fiber_types && !in_target_fiber {
+            // Check if this is a top-level key in fiber_types (2-space indent typically)
+            let current_indent = line.len() - trimmed.len();
+
+            // Log lines we're checking within fiber_types
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                tracing::trace!(
+                    line_num = i,
+                    line = %trimmed,
+                    indent = current_indent,
+                    looking_for = %name,
+                    "Checking line in fiber_types section"
+                );
+            }
+
+            // Check if this line is the start of our target fiber type (check BEFORE exit condition)
+            if trimmed.starts_with(&format!("{}:", name)) && !trimmed.starts_with(&format!("{}::", name)) {
+                tracing::info!(
+                    line_num = i,
+                    fiber_name = %name,
+                    current_indent,
+                    "Found target fiber type"
+                );
+                in_target_fiber = true;
+                found_target = true;
+                fiber_indent = current_indent;
+
+                // Insert the new fiber type YAML (already includes name line)
+                for new_line in new_fiber_yaml.lines() {
+                    result.push(format!("{}{}", " ".repeat(fiber_indent), new_line));
+                }
+
+                // Skip lines until we hit the next fiber type or end of fiber_types
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = next_line.trim_start();
+                    let next_indent = next_line.len() - next_trimmed.len();
+
+                    // Stop if we hit another top-level key or same-level fiber type
+                    if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') {
+                        if next_indent <= fiber_indent {
+                            in_target_fiber = false;
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+
+            // If we hit another top-level section, we're done with fiber_types
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && current_indent == 0 {
+                tracing::debug!(line_num = i, line = %trimmed, "Exiting fiber_types section");
+                in_fiber_types = false;
+            }
+        }
+
+        result.push(line.to_string());
+        i += 1;
+    }
+
+    if !found_target {
+        // Collect fiber types found in the fiber_types section only
+        let fiber_types_in_section: Vec<String> = {
+            let lines: Vec<&str> = yaml.lines().collect();
+            let mut found_types = Vec::new();
+            let mut in_ft_section = false;
+
+            for line in lines {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("fiber_types:") {
+                    in_ft_section = true;
+                    continue;
+                }
+
+                if in_ft_section {
+                    let indent = line.len() - trimmed.len();
+
+                    // Exit fiber_types section when we hit a top-level key
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') && indent == 0 {
+                        break;
+                    }
+
+                    // Collect fiber type names (2-space indent, ends with colon)
+                    if indent == 2 && trimmed.ends_with(':') && !trimmed.starts_with('#') {
+                        found_types.push(trimmed.trim_end_matches(':').to_string());
+                    }
+                }
+            }
+            found_types
+        };
+
+        tracing::error!(
+            fiber_name = %name,
+            yaml_length = yaml.len(),
+            in_fiber_types = in_fiber_types,
+            fiber_types_found = ?fiber_types_in_section,
+            "Failed to find fiber type '{}' in YAML. Fiber types in fiber_types section: {:?}",
+            name,
+            fiber_types_in_section
+        );
+        return Err(ApiError::NotFound(format!(
+            "Fiber type '{}' not found in config YAML. Found fiber types: {:?}. Check that the fiber type exists and is properly formatted.",
+            name,
+            fiber_types_in_section
+        )));
+    }
+
+    Ok(result.join("\n"))
+}
+
+/// Add a new fiber type to the config YAML string while preserving comments
+/// The fiber_yaml should include the fiber type name line (e.g., "request_trace:\n  description: ...")
+fn add_fiber_type_to_yaml(yaml: &str, _name: &str, fiber_yaml: &str) -> Result<String, ApiError> {
+    // Find the fiber_types section and add the new fiber type at the end
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut found_fiber_types = false;
+    let mut fiber_types_indent = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // Check if we're at fiber_types section
+        if trimmed.starts_with("fiber_types:") {
+            found_fiber_types = true;
+            result.push(line.to_string());
+            i += 1;
+
+            // Find the indent level of fiber type entries
+            if i < lines.len() {
+                let next_line = lines[i];
+                let next_trimmed = next_line.trim_start();
+                if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') {
+                    fiber_types_indent = next_line.len() - next_trimmed.len();
+                } else {
+                    fiber_types_indent = 2; // Default 2-space indent
+                }
+            } else {
+                fiber_types_indent = 2;
+            }
+
+            // Keep adding lines until we hit the next top-level section
+            let mut inserted = false;
+            while i < lines.len() {
+                let next_line = lines[i];
+                let next_trimmed = next_line.trim_start();
+                let next_indent = next_line.len() - next_trimmed.len();
+
+                // If we hit a top-level section (0 indent), insert the new fiber type here
+                if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') && next_indent == 0 {
+                    // Add the new fiber type (already includes name line)
+                    for new_line in fiber_yaml.lines() {
+                        result.push(format!("{}{}", " ".repeat(fiber_types_indent), new_line));
+                    }
+                    result.push(String::new()); // Add blank line
+                    inserted = true;
+                    break;
+                }
+
+                result.push(next_line.to_string());
+                i += 1;
+            }
+
+            // If we reached the end of the file without inserting, add at the end
+            if !inserted {
+                result.push(String::new()); // Add blank line before new fiber type
+                for new_line in fiber_yaml.lines() {
+                    result.push(format!("{}{}", " ".repeat(fiber_types_indent), new_line));
+                }
+            }
+            continue;
+        }
+
+        result.push(line.to_string());
+        i += 1;
+    }
+
+    if !found_fiber_types {
+        return Err(ApiError::Internal("fiber_types section not found in config".to_string()));
+    }
+
+    Ok(result.join("\n"))
+}
+
+/// Extract a fiber type's YAML content from the config while preserving formatting
+/// Returns the content WITH the fiber type name line included (e.g., "request_trace:\n  description: ...")
+fn extract_fiber_type_yaml_with_name(yaml: &str, name: &str) -> Result<String, ApiError> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut in_fiber_types = false;
+    let mut found_target = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // Check if we're entering fiber_types section
+        if trimmed.starts_with("fiber_types:") {
+            in_fiber_types = true;
+            i += 1;
+            continue;
+        }
+
+        // If we're in fiber_types, look for our target fiber
+        if in_fiber_types {
+            let current_indent = line.len() - trimmed.len();
+
+            // If we hit another top-level section, we're done
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && current_indent == 0 {
+                break;
+            }
+
+            // Check if this is our target fiber type
+            if trimmed.starts_with(&format!("{}:", name)) && !trimmed.starts_with(&format!("{}::", name)) {
+                found_target = true;
+                let fiber_indent = current_indent;
+
+                // Add the fiber type name line (without base indentation)
+                result.push(trimmed.to_string());
+
+                // Collect all child lines (lines with greater indentation)
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = next_line.trim_start();
+                    let next_indent = next_line.len() - next_trimmed.len();
+
+                    // If we hit a blank line, check what comes after
+                    if next_trimmed.is_empty() {
+                        // Look ahead to find the next non-blank line
+                        let mut peek_idx = i + 1;
+                        while peek_idx < lines.len() && lines[peek_idx].trim_start().is_empty() {
+                            peek_idx += 1;
+                        }
+
+                        if peek_idx < lines.len() {
+                            let peek_line = lines[peek_idx];
+                            let peek_trimmed = peek_line.trim_start();
+                            let peek_indent = peek_line.len() - peek_trimmed.len();
+
+                            // If the next non-blank line is at same or lower indent, stop
+                            if peek_indent <= fiber_indent {
+                                break;
+                            }
+                        }
+
+                        // Otherwise, include this blank line
+                        result.push(String::new());
+                        i += 1;
+                        continue;
+                    }
+
+                    // Stop if we hit another same-level or higher-level key
+                    if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') && next_indent <= fiber_indent {
+                        break;
+                    }
+
+                    // Add the line, preserving relative indentation
+                    // Content should be indented 2 spaces relative to the fiber type name
+                    if next_indent > fiber_indent {
+                        // Keep 2-space indent under fiber type name, plus any additional indentation
+                        let relative_indent = next_indent - fiber_indent;
+                        result.push(format!("{}{}", " ".repeat(relative_indent), next_trimmed));
+                    } else {
+                        // Comments at the same level
+                        result.push(next_trimmed.to_string());
+                    }
+
+                    i += 1;
+                }
+                break;
+            }
+        }
+
+        i += 1;
+    }
+
+    if !found_target {
+        return Err(ApiError::NotFound(format!("Fiber type '{}' not found in config", name)));
+    }
+
+    Ok(result.join("\n"))
+}
+
+/// Remove a fiber type from the config YAML string while preserving comments
+fn delete_fiber_type_from_yaml(yaml: &str, name: &str) -> Result<String, ApiError> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut in_fiber_types = false;
+    let mut found_target = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // Check if we're entering fiber_types section
+        if trimmed.starts_with("fiber_types:") {
+            in_fiber_types = true;
+            result.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        // If we're in fiber_types, look for our target fiber
+        if in_fiber_types {
+            let current_indent = line.len() - trimmed.len();
+
+            // If we hit another top-level section, we're done
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && current_indent == 0 {
+                in_fiber_types = false;
+            }
+
+            // Check if this is our target fiber type
+            if trimmed.starts_with(&format!("{}:", name)) && !trimmed.starts_with(&format!("{}::", name)) {
+                found_target = true;
+                let fiber_indent = current_indent;
+
+                // Skip this fiber type and all its children
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = next_line.trim_start();
+                    let next_indent = next_line.len() - next_trimmed.len();
+
+                    // Stop if we hit another same-level or higher-level key
+                    if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') && next_indent <= fiber_indent {
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        result.push(line.to_string());
+        i += 1;
+    }
+
+    if !found_target {
+        return Err(ApiError::NotFound(format!("Fiber type '{}' not found in config", name)));
+    }
+
+    Ok(result.join("\n"))
+}
+

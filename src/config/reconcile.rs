@@ -57,17 +57,27 @@ pub async fn reconcile_config_on_startup(
     // 4. Handle cases
     match db_version {
         None => {
-            // Fresh DB - store initial config
+            // No active version - check if this version exists but is inactive
             println!("{}", style("Initializing config in database...").cyan());
-            let version = ConfigVersion {
-                version_hash: file_hash.clone(),
-                parent_hash: None,
-                yaml_content: file_content,
-                created_at: Utc::now(),
-                source: ConfigSource::File,
-                is_active: true,
-            };
-            storage.insert_config_version(&version).await?;
+
+            // Check if version already exists (e.g., from previous UI save that was never hot-reloaded)
+            let existing_version = storage.get_config_version(&file_hash).await?;
+
+            if existing_version.is_some() {
+                // Version exists but is inactive - just mark it active
+                storage.mark_config_active(&file_hash).await?;
+            } else {
+                // Version doesn't exist - insert it
+                let version = ConfigVersion {
+                    version_hash: file_hash.clone(),
+                    parent_hash: None,
+                    yaml_content: file_content,
+                    created_at: Utc::now(),
+                    source: ConfigSource::File,
+                    is_active: true,
+                };
+                storage.insert_config_version(&version).await?;
+            }
 
             // Update state
             let state = ConfigState {
@@ -140,16 +150,24 @@ async fn handle_existing_conflict(
         Ok(_) => {
             println!("{}", style("✓ Config file is valid YAML").green());
 
-            // Store as new version
-            let version = ConfigVersion {
-                version_hash: file_hash.clone(),
-                parent_hash: state.db_version_hash.clone(),
-                yaml_content: file_content,
-                created_at: Utc::now(),
-                source: ConfigSource::Merge,
-                is_active: true,
-            };
-            storage.insert_config_version(&version).await?;
+            // Check if this version already exists
+            let existing_version = storage.get_config_version(&file_hash).await?;
+
+            if existing_version.is_some() {
+                // Version exists but is inactive - just mark it active
+                storage.mark_config_active(&file_hash).await?;
+            } else {
+                // Store as new version
+                let version = ConfigVersion {
+                    version_hash: file_hash.clone(),
+                    parent_hash: state.db_version_hash.clone(),
+                    yaml_content: file_content,
+                    created_at: Utc::now(),
+                    source: ConfigSource::Merge,
+                    is_active: true,
+                };
+                storage.insert_config_version(&version).await?;
+            }
 
             // Clear conflict state
             let new_state = ConfigState {
@@ -263,15 +281,24 @@ async fn reconcile_diverged_configs(
                 .map_err(|e| ConfigError::Validation(format!("Failed to get user input: {}", e)))?;
 
             if update {
-                let version = ConfigVersion {
-                    version_hash: file_hash.to_string(),
-                    parent_hash: Some(db_version.version_hash.clone()),
-                    yaml_content: file_content.to_string(),
-                    created_at: Utc::now(),
-                    source: ConfigSource::File,
-                    is_active: true,
-                };
-                storage.insert_config_version(&version).await?;
+                // Check if this version already exists (e.g., from previous UI save)
+                let existing_version = storage.get_config_version(file_hash).await?;
+
+                if existing_version.is_some() {
+                    // Version exists but is inactive - just mark it active
+                    storage.mark_config_active(file_hash).await?;
+                } else {
+                    // Version doesn't exist - insert it
+                    let version = ConfigVersion {
+                        version_hash: file_hash.to_string(),
+                        parent_hash: Some(db_version.version_hash.clone()),
+                        yaml_content: file_content.to_string(),
+                        created_at: Utc::now(),
+                        source: ConfigSource::File,
+                        is_active: true,
+                    };
+                    storage.insert_config_version(&version).await?;
+                }
 
                 // Update state
                 let new_state = ConfigState {
@@ -374,15 +401,25 @@ async fn perform_three_way_merge(
 
                     // Save merged version
                     let merged_hash = compute_config_hash(&merged);
-                    let version = ConfigVersion {
-                        version_hash: merged_hash.clone(),
-                        parent_hash: Some(db_version.version_hash.clone()),
-                        yaml_content: merged,
-                        created_at: Utc::now(),
-                        source: ConfigSource::Merge,
-                        is_active: true,
-                    };
-                    storage.insert_config_version(&version).await?;
+
+                    // Check if this version already exists
+                    let existing_version = storage.get_config_version(&merged_hash).await?;
+
+                    if existing_version.is_some() {
+                        // Version exists but is inactive - just mark it active
+                        storage.mark_config_active(&merged_hash).await?;
+                    } else {
+                        // Store as new version
+                        let version = ConfigVersion {
+                            version_hash: merged_hash.clone(),
+                            parent_hash: Some(db_version.version_hash.clone()),
+                            yaml_content: merged,
+                            created_at: Utc::now(),
+                            source: ConfigSource::Merge,
+                            is_active: true,
+                        };
+                        storage.insert_config_version(&version).await?;
+                    }
 
                     // Update state
                     let state = ConfigState {

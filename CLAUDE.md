@@ -110,6 +110,8 @@ Remote Agents → Site Sequencers → Central Sequencer → Raw Log Store
 
 All configuration lives in a single `config.yml` file. The file is divided into sections for sources, fiber types, pipeline settings, storage, and web server.
 
+**⚠️ IMPORTANT FOR AI AGENTS**: Noil's configuration system is fundamentally different from typical application configs. The raw YAML string (with comments and formatting) is the ground truth, NOT the deserialized structs. Configuration changes from the UI are persisted ONLY to the database, and startup reconciliation uses git-style 3-way merging. **See [specs/CONFIG_SYSTEM.md](specs/CONFIG_SYSTEM.md) for critical details before working on any config-related task.**
+
 ### Example Configuration
 
 ```yaml
@@ -510,6 +512,7 @@ Checkpoints are stored in the DuckDB database and written periodically based on 
 
 ## Additional Documentation
 
+- **[specs/CONFIG_SYSTEM.md](specs/CONFIG_SYSTEM.md)**: **CRITICAL for AI agents** - Comprehensive explanation of Noil's unusual configuration system: YAML-as-ground-truth, database persistence, git-style 3-way merging, and version control. **Must read before working on any config-related task.**
 - **[docs/FIBER_PROCESSING.md](docs/FIBER_PROCESSING.md)**: Detailed explanation of fiber correlation semantics, the key/attribute model, session control actions, and worked examples.
 
 ## File Structure

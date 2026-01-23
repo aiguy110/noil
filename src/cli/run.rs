@@ -1,9 +1,10 @@
-use crate::config::parse::load_config;
+use crate::config::parse::{load_config, load_config_with_yaml};
 use crate::config::reconcile::reconcile_config_on_startup;
 #[allow(deprecated)]
 use crate::config::version::compute_config_version;
 use crate::fiber::FiberProcessor;
 use crate::pipeline::{create_channel, run_processor, run_writer, FiberUpdate};
+use crate::reprocessing::ReprocessState;
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
 use crate::source::reader::{LogRecord, SourceReader};
 use crate::storage::checkpoint::{Checkpoint, CheckpointManager, SequencerCheckpoint, SharedSourceState, SharedFiberProcessorState, SourceCheckpoint};
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::signal;
-use tokio::sync::{mpsc, watch, oneshot};
+use tokio::sync::{mpsc, watch, oneshot, RwLock};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Error)]
@@ -101,7 +102,7 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     }
 
     // Load and validate config (may have been updated by reconciliation)
-    let config = load_config(config_path)?;
+    let (config, config_yaml) = load_config_with_yaml(config_path)?;
 
     // Compute config version from content hash
     #[allow(deprecated)]
@@ -275,6 +276,13 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
         None
     };
 
+    // Wrap fiber processor and config in shared state for hot-reload support
+    let shared_processor = Arc::new(RwLock::new(fiber_processor));
+    let shared_config = Arc::new(RwLock::new(config.clone()));
+    let shared_config_yaml = Arc::new(RwLock::new(config_yaml));
+    let shared_version = Arc::new(RwLock::new(config_version));
+    let shared_reprocess_state: Arc<RwLock<Option<ReprocessState>>> = Arc::new(RwLock::new(None));
+
     // Create channels
     let buffer_size = config.pipeline.backpressure.buffer_limit;
     let (seq_tx, seq_rx) = create_channel::<LogRecord>(buffer_size);
@@ -395,8 +403,10 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     let processor_storage = storage.clone();
     let processor_config = config.clone();
     let processor_shared_state = shared_fiber_state.clone();
+    let processor_lock = Arc::clone(&shared_processor);
+    let version_lock = Arc::clone(&shared_version);
     let mut processor_handle = Some(tokio::spawn(async move {
-        run_processor(seq_rx, fiber_tx, fiber_processor, processor_storage, &processor_config, config_version, processor_shared_state).await
+        run_processor(seq_rx, fiber_tx, processor_lock, version_lock, processor_storage, &processor_config, processor_shared_state).await
     }));
 
     // Start storage writer task
@@ -410,13 +420,28 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     // Start web server task
     info!("Starting web server on {}", config.web.listen);
     let web_storage = storage.clone();
-    let web_fiber_types = Arc::new(config.fiber_types.clone());
     let web_config = config.web.clone();
     let web_shutdown_rx = shutdown_rx.clone();
+    let web_processor = Arc::clone(&shared_processor);
+    let web_shared_config = Arc::clone(&shared_config);
+    let web_shared_config_yaml = Arc::clone(&shared_config_yaml);
+    let web_version = Arc::clone(&shared_version);
+    let web_reprocess_state = Arc::clone(&shared_reprocess_state);
+    let web_config_path = config_path.clone();
     let web_handle = tokio::spawn(async move {
-        run_server(web_storage, web_fiber_types, web_config, web_shutdown_rx)
-            .await
-            .map_err(|e| RunError::WebServer(e.to_string()))
+        run_server(
+            web_storage,
+            web_processor,
+            web_shared_config,
+            web_version,
+            web_reprocess_state,
+            web_config_path,
+            web_shared_config_yaml,
+            web_config,
+            web_shutdown_rx,
+        )
+        .await
+        .map_err(|e| RunError::WebServer(e.to_string()))
     });
 
     info!("Pipeline started, press Ctrl+C to shutdown");

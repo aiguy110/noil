@@ -2,21 +2,20 @@ use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
 
-/// Compute a deterministic version hash for a configuration based on its content.
+/// Compute a deterministic version hash for a configuration based on its raw content.
 ///
-/// The version is computed as a SHA-256 hash of the normalized YAML content, ensuring that:
-/// - The same config produces the same version hash
-/// - Different configs produce different version hashes
-/// - Formatting differences (whitespace, etc.) don't affect the hash
+/// The version is computed as a SHA-256 hash of the raw YAML string, ensuring that:
+/// - The same config content produces the same version hash
+/// - Any change to the content (including whitespace/comments) produces a different hash
+/// - The original formatting is preserved (no normalization)
 ///
 /// This version is stored with all logs and fiber memberships to enable:
 /// - Processing in-flight logs with original config semantics
 /// - Reprocessing historical logs with new rules
 /// - Comparing results across config versions
 pub fn compute_config_hash(yaml_content: &str) -> String {
-    let normalized = normalize_yaml(yaml_content);
     let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
+    hasher.update(yaml_content.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -26,14 +25,6 @@ pub fn compute_config_hash_from_file(config_path: &Path) -> Result<String, io::E
     Ok(compute_config_hash(&content))
 }
 
-/// Normalize YAML content by parsing and re-serializing to canonical form.
-/// This ensures that formatting differences don't affect the hash.
-fn normalize_yaml(content: &str) -> String {
-    match serde_yaml::from_str::<serde_yaml::Value>(content) {
-        Ok(value) => serde_yaml::to_string(&value).unwrap_or_else(|_| content.to_string()),
-        Err(_) => content.to_string(),
-    }
-}
 
 /// Legacy function for backward compatibility - computes numeric version
 /// This is kept to avoid breaking existing code, but new code should use compute_config_hash
@@ -77,29 +68,28 @@ mod tests {
     }
 
     #[test]
-    fn test_normalized_content_produces_same_hash() {
-        // Same semantic content with different formatting
+    fn test_different_formatting_produces_different_hash() {
+        // Different formatting produces different hashes (no normalization)
         let content1 = "sources:\n  test:\n    type: file\n    path: /var/log/test.log";
         let content2 = "sources:\n  test:\n    path: /var/log/test.log\n    type: file";
 
         let hash1 = compute_config_hash(content1);
         let hash2 = compute_config_hash(content2);
 
-        // After normalization, hashes should be the same
-        // (YAML maps are unordered, so serde_yaml normalization handles this)
-        assert_eq!(hash1, hash2);
+        // Hashes should be different because content is different (no normalization)
+        assert_ne!(hash1, hash2);
     }
 
     #[test]
-    fn test_whitespace_differences_normalized() {
+    fn test_whitespace_differences_produce_different_hash() {
         let content1 = "sources:\n  test:\n    type: file";
         let content2 = "sources:\n  test:\n    type:  file"; // Extra space
 
         let hash1 = compute_config_hash(content1);
         let hash2 = compute_config_hash(content2);
 
-        // Should normalize to same hash
-        assert_eq!(hash1, hash2);
+        // Should produce different hashes (no normalization)
+        assert_ne!(hash1, hash2);
     }
 
     #[test]
@@ -123,11 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_yaml_uses_raw_content() {
+    fn test_invalid_yaml_still_produces_hash() {
         let invalid_yaml = "this is not valid: yaml: content: [[[";
         let hash = compute_config_hash(invalid_yaml);
 
-        // Should still produce a hash (using raw content)
+        // Should still produce a hash from the raw string
         assert_eq!(hash.len(), 64);
     }
 }

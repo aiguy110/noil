@@ -210,7 +210,7 @@
                     <!-- Configuration Tab -->
                     <div id="modal-tab-config" class="modal-tab-content">
                         <div class="config-notice">
-                            <strong>Note:</strong> Configuration changes require a restart to take effect.
+                            <strong>Note:</strong> Global configuration changes (sources, pipeline, storage, web) require a restart to take effect. Fiber types can be hot-reloaded in the Fiber Processing tab.
                         </div>
                         <div class="config-editor-toolbar">
                             <button id="config-save" class="btn btn-primary">Save Configuration</button>
@@ -229,7 +229,53 @@
                     <!-- Fiber Processing Tab -->
                     <div id="modal-tab-fiber-processing" class="modal-tab-content">
                         <h3>Fiber Processing</h3>
-                        <!-- Future fiber processing controls will go here -->
+
+                        <div class="fiber-processing-layout">
+                            <!-- Sidebar with fiber type list -->
+                            <div class="fiber-type-sidebar">
+                                <div class="fiber-type-header">
+                                    <h4>Fiber Types</h4>
+                                    <button id="new-fiber-type" class="btn btn-small btn-secondary">+ New</button>
+                                </div>
+                                <div id="fiber-type-list" class="fiber-type-list">
+                                    <!-- Populated by fiber-processing.js -->
+                                </div>
+                            </div>
+
+                            <!-- Main editor area -->
+                            <div class="fiber-editor-main">
+                                <div class="fiber-editor-header">
+                                    <h4>Editing: <span id="fiber-type-name">-</span></h4>
+                                    <div class="fiber-editor-actions">
+                                        <button id="fiber-save" class="btn btn-primary" disabled>Save</button>
+                                        <button id="fiber-hot-reload" class="btn btn-success" disabled>Hot Reload</button>
+                                        <button id="fiber-delete" class="btn btn-danger" disabled>Delete</button>
+                                    </div>
+                                </div>
+
+                                <textarea id="fiber-yaml-editor" class="fiber-yaml-editor" spellcheck="false" disabled placeholder="Select a fiber type to edit..."></textarea>
+
+                                <div id="fiber-status" class="fiber-status"></div>
+
+                                <div class="reprocess-section">
+                                    <h4>Reprocess Historical Logs</h4>
+                                    <p>Re-run fiber processing on all ingested logs with current fiber type rules.</p>
+                                    <button id="start-reprocess" class="btn btn-primary">Reprocess Logs</button>
+
+                                    <!-- Progress bar (hidden by default) -->
+                                    <div id="reprocess-progress" class="reprocess-progress" style="display: none;">
+                                        <div class="progress-bar">
+                                            <div id="reprocess-progress-bar" class="progress-bar-fill"></div>
+                                        </div>
+                                        <div class="progress-stats">
+                                            <span id="reprocess-status-text">Processing...</span>
+                                            <span id="reprocess-progress-text">0 / 0 logs</span>
+                                        </div>
+                                        <button id="cancel-reprocess" class="btn btn-secondary">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -243,6 +289,7 @@
     <script src="js/timeline.js"></script>
     <script src="js/logviewer.js"></script>
     <script src="js/config-editor.js"></script>
+    <script src="js/fiber-processing.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

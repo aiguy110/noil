@@ -119,6 +119,55 @@ class NoilAPI {
     async getConfigDiff(hash1, hash2) {
         return this.request(`/api/config/diff/${hash1}/${hash2}`);
     }
+
+    // Fiber Type Management
+    async getFiberType(name) {
+        return this.request(`/api/fiber-types/${encodeURIComponent(name)}`);
+    }
+
+    async updateFiberType(name, yamlContent) {
+        return this.request(`/api/fiber-types/${encodeURIComponent(name)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ yaml_content: yamlContent }),
+        });
+    }
+
+    async createFiberType(name, yamlContent) {
+        return this.request('/api/fiber-types', {
+            method: 'POST',
+            body: JSON.stringify({ name, yaml_content: yamlContent }),
+        });
+    }
+
+    async deleteFiberType(name) {
+        return this.request(`/api/fiber-types/${encodeURIComponent(name)}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async hotReloadFiberType(name) {
+        return this.request(`/api/fiber-types/${encodeURIComponent(name)}/hot-reload`, {
+            method: 'POST',
+        });
+    }
+
+    // Reprocessing
+    async startReprocessing(options = {}) {
+        return this.request('/api/reprocess', {
+            method: 'POST',
+            body: JSON.stringify(options),
+        });
+    }
+
+    async getReprocessStatus() {
+        return this.request('/api/reprocess/status');
+    }
+
+    async cancelReprocessing() {
+        return this.request('/api/reprocess/cancel', {
+            method: 'POST',
+        });
+    }
 }
 
 // Export singleton instance

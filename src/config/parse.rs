@@ -25,14 +25,30 @@ pub enum ConfigError {
 }
 
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
-    let file = File::open(path).map_err(|e| {
+    let (config, _) = load_config_with_yaml(path)?;
+    Ok(config)
+}
+
+/// Load config and return both the parsed config and the original YAML string
+pub fn load_config_with_yaml(path: &Path) -> Result<(Config, String), ConfigError> {
+    use std::io::Read;
+
+    let mut file = File::open(path).map_err(|e| {
         ConfigError::Io(std::io::Error::new(
             e.kind(),
             format!("failed to open config file '{}': {}", path.display(), e),
         ))
     })?;
 
-    let mut config: Config = serde_yaml::from_reader(file).map_err(|e| {
+    let mut yaml_string = String::new();
+    file.read_to_string(&mut yaml_string).map_err(|e| {
+        ConfigError::Io(std::io::Error::new(
+            e.kind(),
+            format!("failed to read config file '{}': {}", path.display(), e),
+        ))
+    })?;
+
+    let mut config: Config = serde_yaml::from_str(&yaml_string).map_err(|e| {
         // Wrap error with file context
         ConfigError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -50,7 +66,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 
     validate_config(&config)?;
 
-    Ok(config)
+    Ok((config, yaml_string))
 }
 
 /// Expands tilde (~) in all PathBuf fields in the config.
