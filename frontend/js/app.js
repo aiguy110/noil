@@ -1131,7 +1131,7 @@ class NoilApp {
                     typeNameEl: 'fiber-type-name-page',
                     editorEl: 'fiber-yaml-editor-page',
                     saveBtnEl: 'fiber-save-page',
-                    hotReloadBtnEl: 'fiber-hot-reload-page',
+                    activateBtnEl: 'fiber-hot-reload-page',
                     deleteBtnEl: 'fiber-delete-page',
                     newBtnEl: 'new-fiber-type-page',
                     statusEl: 'fiber-status-page',

@@ -10,6 +10,8 @@ class ConfigEditor {
         this.elements = {};
         this.editorView = null; // CodeMirror editor instance
         this.editableCompartment = null; // Compartment for dynamic reconfiguration
+        this.selectedVersionHash = null; // Currently selected version in history modal
+        this.viewingHistoricalVersion = false; // Whether we're viewing a historical version
     }
 
     async init() {
@@ -203,14 +205,14 @@ class ConfigEditor {
             return;
         }
 
-        // Check if changed
-        if (yaml === this.originalYaml) {
+        // Check if changed (trim to avoid false positives from whitespace)
+        if (yaml.trim() === this.originalYaml.trim()) {
             this.showStatus('No changes to save', 'info');
             return;
         }
 
         // Confirm save
-        if (!confirm('Save configuration? Note: Global config changes require a restart. Fiber types can be hot-reloaded separately.')) {
+        if (!confirm('Save configuration? Note: Global config changes require a restart. Fiber types can be activated separately.')) {
             return;
         }
 
@@ -224,7 +226,7 @@ class ConfigEditor {
 
             // Show restart reminder
             setTimeout(() => {
-                alert('Configuration has been saved.\n\nIMPORTANT: You must restart the Noil server for global config changes to take effect.\n\nNote: Fiber type changes can be hot-reloaded in the Fiber Processing tab without restarting.');
+                alert('Configuration has been saved.\n\nIMPORTANT: You must restart the Noil server for global config changes to take effect.\n\nNote: Fiber type changes can be activated in the Fiber Processing tab without restarting.');
             }, 500);
         } catch (error) {
             this.showStatus(`Error saving config: ${error.message}`, 'error');
@@ -233,7 +235,7 @@ class ConfigEditor {
     }
 
     resetConfig() {
-        if (this.getEditorValue() !== this.originalYaml) {
+        if (this.getEditorValue().trim() !== this.originalYaml.trim()) {
             if (confirm('Discard unsaved changes?')) {
                 this.setEditorValue(this.originalYaml);
                 this.showStatus('Changes discarded', 'info');
@@ -298,7 +300,11 @@ class ConfigEditor {
         content.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <h3>Configuration History</h3>
-                <button class="history-close" style="background: none; border: none; color: inherit; font-size: 24px; cursor: pointer;">&times;</button>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button class="history-view-btn btn btn-secondary" disabled>View</button>
+                    <button class="history-activate-btn btn btn-primary" disabled>Activate</button>
+                    <button class="history-close" style="background: none; border: none; color: inherit; font-size: 24px; cursor: pointer;">&times;</button>
+                </div>
             </div>
             <div class="history-list">
                 ${this.renderHistoryList(history.versions)}
@@ -306,6 +312,10 @@ class ConfigEditor {
         `;
 
         modal.appendChild(content);
+
+        // Setup event handlers
+        this.setupHistoryModalHandlers(modal, history.versions);
+
         return modal;
     }
 
@@ -320,7 +330,7 @@ class ConfigEditor {
             const activeLabel = version.is_active ? ' <span style="color: #4caf50;">(Active)</span>' : '';
 
             return `
-                <div class="history-item" style="border-bottom: 1px solid #444; padding: 10px 0; cursor: pointer;" data-hash="${version.version_hash}">
+                <div class="history-item" style="border-bottom: 1px solid #444; padding: 10px 0; cursor: pointer; transition: background-color 0.2s;" data-hash="${version.version_hash}">
                     <div><strong>${date}</strong>  ${activeLabel}</div>
                     <div style="font-family: monospace; font-size: 0.9em; color: #aaa;">
                         ${hashShort} - ${version.source}
@@ -329,6 +339,165 @@ class ConfigEditor {
                 </div>
             `;
         }).join('');
+    }
+
+    setupHistoryModalHandlers(modal, versions) {
+        const viewBtn = modal.querySelector('.history-view-btn');
+        const activateBtn = modal.querySelector('.history-activate-btn');
+        const historyItems = modal.querySelectorAll('.history-item');
+
+        // Reset selected version
+        this.selectedVersionHash = null;
+
+        // Add click handlers to history items
+        historyItems.forEach(item => {
+            item.addEventListener('click', () => {
+                const hash = item.getAttribute('data-hash');
+
+                // Update selection
+                this.selectedVersionHash = hash;
+
+                // Update visual selection
+                historyItems.forEach(i => {
+                    if (i === item) {
+                        i.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
+                        i.style.borderLeft = '3px solid #4caf50';
+                        i.style.paddingLeft = '7px';
+                    } else {
+                        i.style.backgroundColor = '';
+                        i.style.borderLeft = '';
+                        i.style.paddingLeft = '';
+                    }
+                });
+
+                // Enable buttons
+                viewBtn.disabled = false;
+                activateBtn.disabled = false;
+            });
+        });
+
+        // View button handler
+        viewBtn.addEventListener('click', async () => {
+            if (!this.selectedVersionHash) return;
+
+            try {
+                this.showStatus('Loading config version...', 'info');
+                const version = await this.api.getConfigVersion(this.selectedVersionHash);
+
+                // Load the YAML content into editor
+                this.setEditorValue(version.yaml_content);
+                this.viewingHistoricalVersion = true;
+
+                // Add indicator banner
+                this.showHistoricalVersionBanner(version);
+
+                // Close modal
+                modal.remove();
+
+                this.showStatus(`Viewing version ${version.version_hash.substring(0, 8)}`, 'info');
+            } catch (error) {
+                this.showStatus(`Error loading version: ${error.message}`, 'error');
+                console.error('Failed to load config version:', error);
+            }
+        });
+
+        // Activate button handler
+        activateBtn.addEventListener('click', async () => {
+            if (!this.selectedVersionHash) return;
+
+            const version = versions.find(v => v.version_hash === this.selectedVersionHash);
+            const hashShort = this.selectedVersionHash.substring(0, 8);
+
+            const confirmed = confirm(
+                `Activate config version ${hashShort}?\n\n` +
+                'This will:\n' +
+                '- Mark this version as active\n' +
+                '- Activate ALL fiber types with rules from this version\n' +
+                '- Close all open fibers\n\n' +
+                'Continue?'
+            );
+
+            if (!confirmed) return;
+
+            try {
+                this.showStatus('Activating config version...', 'info');
+                await this.api.activateConfigVersion(this.selectedVersionHash);
+
+                // Reload current config
+                await this.loadCurrentConfig();
+
+                // Remove historical version banner if present
+                this.removeHistoricalVersionBanner();
+                this.viewingHistoricalVersion = false;
+
+                // Close modal
+                modal.remove();
+
+                this.showStatus(`Config version ${hashShort} activated successfully!`, 'success');
+            } catch (error) {
+                this.showStatus(`Error activating version: ${error.message}`, 'error');
+                console.error('Failed to activate config version:', error);
+            }
+        });
+    }
+
+    showHistoricalVersionBanner(version) {
+        // Remove existing banner if present
+        this.removeHistoricalVersionBanner();
+
+        const banner = document.createElement('div');
+        banner.className = 'historical-version-banner';
+        banner.style.cssText = `
+            background: #ff9800;
+            color: #000;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+        `;
+
+        const hashShort = version.version_hash.substring(0, 8);
+        const date = new Date(version.created_at).toLocaleString();
+
+        banner.innerHTML = `
+            <span>⚠ Viewing historical version: ${hashShort} (${date})</span>
+            <button class="btn-restore-current" style="background: #fff; color: #000; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                Restore Current
+            </button>
+        `;
+
+        // Insert banner before editor
+        const editorContainer = this.elements.editorContainer;
+        if (this.editorView) {
+            // CodeMirror mode - insert before wrapper
+            const wrapper = editorContainer.parentElement.querySelector('.cm-editor-wrapper');
+            wrapper.parentElement.insertBefore(banner, wrapper);
+        } else {
+            // Fallback textarea mode
+            editorContainer.parentElement.insertBefore(banner, editorContainer);
+        }
+
+        // Restore button handler
+        banner.querySelector('.btn-restore-current').addEventListener('click', () => {
+            this.restoreCurrentConfig();
+        });
+    }
+
+    removeHistoricalVersionBanner() {
+        const banner = document.querySelector('.historical-version-banner');
+        if (banner) {
+            banner.remove();
+        }
+    }
+
+    restoreCurrentConfig() {
+        this.setEditorValue(this.originalYaml);
+        this.removeHistoricalVersionBanner();
+        this.viewingHistoricalVersion = false;
+        this.showStatus('Restored to current active config', 'info');
     }
 
     showStatus(message, type) {

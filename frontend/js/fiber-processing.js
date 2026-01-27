@@ -1,6 +1,6 @@
 /**
  * Fiber Processing Editor Module
- * Handles fiber type editing with hot-reload and reprocessing
+ * Handles fiber type editing with activation and reprocessing
  */
 class FiberProcessingEditor {
     constructor(api, elementIds = {}) {
@@ -13,12 +13,14 @@ class FiberProcessingEditor {
         this.elements = {};
         this.editorView = null; // CodeMirror editor instance
         this.editableCompartment = null; // Compartment for dynamic reconfiguration
+        this.currentConfigVersion = null; // Current active config version
+        this.selectedVersionHash = null; // Selected version in history modal
         this.elementIds = {
             typeListEl: 'fiber-type-list',
             typeNameEl: 'fiber-type-name',
             editorEl: 'fiber-yaml-editor',
             saveBtnEl: 'fiber-save',
-            hotReloadBtnEl: 'fiber-hot-reload',
+            activateBtnEl: 'fiber-hot-reload',
             deleteBtnEl: 'fiber-delete',
             newBtnEl: 'new-fiber-type',
             statusEl: 'fiber-status',
@@ -28,6 +30,9 @@ class FiberProcessingEditor {
             reprocessStatusTextEl: 'reprocess-status-text',
             reprocessProgressTextEl: 'reprocess-progress-text',
             cancelReprocessBtnEl: 'cancel-reprocess',
+            configVersionIndicatorEl: 'fiber-config-version-indicator',
+            configVersionHashEl: 'fiber-config-version-hash',
+            configVersionStatusEl: 'fiber-config-version-status',
             ...elementIds
         };
     }
@@ -39,7 +44,7 @@ class FiberProcessingEditor {
             typeName: document.getElementById(this.elementIds.typeNameEl),
             editorContainer: document.getElementById(this.elementIds.editorEl),
             saveBtn: document.getElementById(this.elementIds.saveBtnEl),
-            hotReloadBtn: document.getElementById(this.elementIds.hotReloadBtnEl),
+            activateBtn: document.getElementById(this.elementIds.activateBtnEl),
             deleteBtn: document.getElementById(this.elementIds.deleteBtnEl),
             newBtn: document.getElementById(this.elementIds.newBtnEl),
             status: document.getElementById(this.elementIds.statusEl),
@@ -49,6 +54,9 @@ class FiberProcessingEditor {
             reprocessStatusText: document.getElementById(this.elementIds.reprocessStatusTextEl),
             reprocessProgressText: document.getElementById(this.elementIds.reprocessProgressTextEl),
             cancelReprocessBtn: document.getElementById(this.elementIds.cancelReprocessBtnEl),
+            configVersionIndicator: document.getElementById(this.elementIds.configVersionIndicatorEl),
+            configVersionHash: document.getElementById(this.elementIds.configVersionHashEl),
+            configVersionStatus: document.getElementById(this.elementIds.configVersionStatusEl),
         };
 
         // Initialize CodeMirror editor
@@ -59,6 +67,9 @@ class FiberProcessingEditor {
             // Fall back to using the textarea directly
             this.useFallbackEditor();
         }
+
+        // Load current config version
+        await this.loadConfigVersion();
 
         // Load fiber types
         await this.loadFiberTypes();
@@ -192,8 +203,9 @@ class FiberProcessingEditor {
     }
 
     handleEditorChange() {
-        const yaml = this.editorView.state.doc.toString();
-        this.hasUnsavedChanges = yaml !== this.originalYaml;
+        const yaml = this.getEditorValue();
+        // Trim both values to avoid false positives from trailing whitespace differences
+        this.hasUnsavedChanges = yaml.trim() !== this.originalYaml.trim();
 
         // Update displayed name if the fiber type name changed in the YAML
         try {
@@ -213,6 +225,8 @@ class FiberProcessingEditor {
             // Invalid YAML, ignore
         }
 
+        // Update config version indicator to show unsaved changes
+        this.updateConfigVersionIndicator();
         this.updateButtonStates();
     }
 
@@ -273,9 +287,9 @@ class FiberProcessingEditor {
             this.saveFiberType();
         });
 
-        // Hot reload button
-        this.elements.hotReloadBtn.addEventListener('click', () => {
-            this.hotReload();
+        // Activate button
+        this.elements.activateBtn.addEventListener('click', () => {
+            this.activateFiberType();
         });
 
         // Delete button
@@ -298,12 +312,51 @@ class FiberProcessingEditor {
             this.cancelReprocessing();
         });
 
+        // Config version indicator click handler
+        if (this.elements.configVersionIndicator) {
+            this.elements.configVersionIndicator.addEventListener('click', () => {
+                this.showConfigHistory();
+            });
+        }
+
         // Editor change tracking for fallback textarea mode
         if (!this.editorView && this.elements.editorContainer) {
             this.elements.editorContainer.addEventListener('input', () => {
                 this.handleEditorChange();
             });
         }
+    }
+
+    async loadConfigVersion() {
+        try {
+            const config = await this.api.getCurrentConfig();
+            this.currentConfigVersion = config;
+            this.updateConfigVersionIndicator();
+        } catch (error) {
+            console.error('Failed to load config version:', error);
+            // Don't show error to user - this is background info
+        }
+    }
+
+    updateConfigVersionIndicator() {
+        if (!this.currentConfigVersion || !this.elements.configVersionHash || !this.elements.configVersionStatus) {
+            return;
+        }
+
+        const hashShort = this.currentConfigVersion.version_hash.substring(0, 8);
+
+        // Show unsaved changes indicator if content differs from loaded version
+        const currentYaml = this.getEditorValue();
+        const hasChanges = this.selectedType && currentYaml.trim() !== this.originalYaml.trim();
+        const unsavedMarker = hasChanges ? ' *' : '';
+
+        // Show active/inactive status
+        const status = this.currentConfigVersion.is_active ? ' (active)' : ' (inactive)';
+        const statusColor = this.currentConfigVersion.is_active ? '#4caf50' : '#ff9800';
+
+        this.elements.configVersionHash.textContent = hashShort + unsavedMarker;
+        this.elements.configVersionStatus.textContent = status;
+        this.elements.configVersionStatus.style.color = statusColor;
     }
 
     async loadFiberTypes() {
@@ -421,8 +474,8 @@ class FiberProcessingEditor {
             return;
         }
 
-        // Check if changed
-        if (yaml === this.originalYaml) {
+        // Check if changed (trim to avoid false positives from whitespace)
+        if (yaml.trim() === this.originalYaml.trim()) {
             this.showStatus('No changes to save', 'info');
             return;
         }
@@ -434,7 +487,7 @@ class FiberProcessingEditor {
                 'This will:\n' +
                 `- Delete the "${this.selectedType}" fiber type\n` +
                 `- Create a new "${newName}" fiber type\n` +
-                '- Require Hot Reload to take effect\n\n' +
+                '- Require Activate to take effect\n\n' +
                 'Continue?'
             );
             if (!confirmed) return;
@@ -446,6 +499,14 @@ class FiberProcessingEditor {
 
             this.originalYaml = yaml;
             this.hasUnsavedChanges = false;
+
+            // Update current config version to the newly saved version
+            // The save created a new config version (inactive), so we need to show that
+            this.currentConfigVersion = {
+                version_hash: result.new_version_hash,
+                is_active: false,
+            };
+            this.updateConfigVersionIndicator();
 
             // Update selected type to new name if renamed
             if (newName !== this.selectedType) {
@@ -461,15 +522,15 @@ class FiberProcessingEditor {
                 });
 
                 this.showStatus(
-                    `Saved and renamed to "${newName}"! Use Hot Reload to apply changes.`,
+                    `Saved and renamed to "${newName}"! Use Activate to apply changes.`,
                     'success'
                 );
             } else {
-                // Show success with warning about hot reload
-                const warnings = result.warnings && result.warnings.length > 0
-                    ? `\nWarnings: ${result.warnings.join(', ')}`
+                // Show success with warning about activate
+                const warnings = result.validation_warnings && result.validation_warnings.length > 0
+                    ? `\nWarnings: ${result.validation_warnings.join(', ')}`
                     : '';
-                this.showStatus(`Saved! Use Hot Reload to apply changes.${warnings}`, 'success');
+                this.showStatus(`Saved! Use Activate to apply changes.${warnings}`, 'success');
             }
 
             this.updateButtonStates();
@@ -479,15 +540,15 @@ class FiberProcessingEditor {
         }
     }
 
-    async hotReload() {
+    async activateFiberType() {
         if (!this.selectedType) {
             this.showStatus('No fiber type selected', 'error');
             return;
         }
 
-        // Confirm hot reload
+        // Confirm activation
         const confirmed = confirm(
-            'Hot Reload will:\n' +
+            'Activate will:\n' +
             '- Close all open fibers of this type\n' +
             '- Apply new rules to incoming logs\n\n' +
             'Existing fiber data will NOT be reprocessed.\n' +
@@ -498,20 +559,24 @@ class FiberProcessingEditor {
         if (!confirmed) return;
 
         try {
-            this.showStatus('Hot reloading...', 'info');
-            await this.api.hotReloadFiberType(this.selectedType);
+            this.showStatus('Activating...', 'info');
+            await this.api.activateFiberType(this.selectedType);
 
-            this.showStatus('Hot reload complete! New logs will use updated rules.', 'success');
+            this.showStatus('Activation complete! New logs will use updated rules.', 'success');
+
+            // Reload config version to update the indicator (the version is now active)
+            await this.loadConfigVersion();
+            this.updateConfigVersionIndicator();
 
             // Refresh fiber types list in case anything changed
             await this.loadFiberTypes();
         } catch (error) {
             if (error.message.includes('409') || error.message.includes('conflict')) {
-                this.showStatus('Cannot hot reload while reprocessing is in progress', 'error');
+                this.showStatus('Cannot activate while reprocessing is in progress', 'error');
             } else {
                 this.showStatus(`Error: ${error.message}`, 'error');
             }
-            console.error('Failed to hot reload:', error);
+            console.error('Failed to activate:', error);
         }
     }
 
@@ -532,7 +597,7 @@ class FiberProcessingEditor {
             `Delete fiber type "${this.selectedType}"?\n\n` +
             'This will remove the fiber type from the configuration.\n' +
             'Existing fibers and memberships will NOT be deleted.\n' +
-            'You will need to Hot Reload for changes to take effect.'
+            'You will need to Activate for changes to take effect.'
         );
 
         if (!confirmed) return;
@@ -541,7 +606,7 @@ class FiberProcessingEditor {
             this.showStatus('Deleting...', 'info');
             await this.api.deleteFiberType(this.selectedType);
 
-            this.showStatus('Deleted! Hot Reload to apply changes.', 'success');
+            this.showStatus('Deleted! Activate to apply changes.', 'success');
 
             // Clear selection and refresh list
             this.selectedType = null;
@@ -595,7 +660,7 @@ sources:
             this.showStatus('Creating...', 'info');
             await this.api.createFiberType(name, yaml);
 
-            this.showStatus(`Created! Use Hot Reload to start using "${name}".`, 'success');
+            this.showStatus(`Created! Use Activate to start using "${name}".`, 'success');
 
             // Refresh and select the new type
             await this.loadFiberTypes();
@@ -625,12 +690,17 @@ sources:
 
                 <div class="reprocess-option">
                     <label>Time Range (optional):</label>
-                    <div class="time-range-inputs">
-                        <input type="datetime-local" id="reprocess-start" placeholder="Start">
-                        <span>to</span>
-                        <input type="datetime-local" id="reprocess-end" placeholder="End">
-                    </div>
                     <p class="option-help">Leave empty to reprocess all logs.</p>
+                    <div class="time-range-inputs">
+                        <div class="time-range-input-group">
+                            <label for="reprocess-start">From:</label>
+                            <input type="datetime-local" id="reprocess-start">
+                        </div>
+                        <div class="time-range-input-group">
+                            <label for="reprocess-end">To:</label>
+                            <input type="datetime-local" id="reprocess-end">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="reprocess-modal-actions">
@@ -802,16 +872,27 @@ sources:
         const fiberType = this.fiberTypes.find(ft => ft.name === this.selectedType);
         const isSourceFiber = fiberType?.is_source_fiber;
 
-        this.elements.saveBtn.disabled = !hasSelection;
-        this.elements.hotReloadBtn.disabled = !hasSelection;
+        // Check if currently viewed version is already active
+        const isCurrentlyActive = this.currentConfigVersion && this.currentConfigVersion.is_active;
+
+        // Save button: disabled if no selection OR no unsaved changes OR source fiber
+        this.elements.saveBtn.disabled = !hasSelection || !this.hasUnsavedChanges || isSourceFiber;
+
+        // Activate button: disabled if no selection OR has unsaved changes (must save first) OR already active
+        this.elements.activateBtn.disabled = !hasSelection || this.hasUnsavedChanges || isCurrentlyActive;
+
+        // Delete button: disabled if no selection OR source fiber
         this.elements.deleteBtn.disabled = !hasSelection || isSourceFiber;
+
+        // Editor: enabled if has selection
         this.setEditorEnabled(hasSelection);
 
-        // Hot reload button style - highlight if there are saved changes
-        if (hasSelection && !this.hasUnsavedChanges) {
-            this.elements.hotReloadBtn.classList.remove('btn-success-muted');
+        // Activate button style - highlight if ready to activate (saved changes exist)
+        // Gray out if unsaved changes exist or already active
+        if (hasSelection && !this.hasUnsavedChanges && !isCurrentlyActive) {
+            this.elements.activateBtn.classList.remove('btn-success-muted');
         } else {
-            this.elements.hotReloadBtn.classList.add('btn-success-muted');
+            this.elements.activateBtn.classList.add('btn-success-muted');
         }
     }
 
@@ -1238,6 +1319,226 @@ sources:
         const seconds = String(date.getSeconds()).padStart(2, '0');
         const ms = String(date.getMilliseconds()).padStart(3, '0');
         return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+    }
+
+    // =========================================================================
+    // Config History Integration
+    // =========================================================================
+
+    async showConfigHistory() {
+        try {
+            const history = await this.api.getConfigHistory({ limit: 20, offset: 0 });
+
+            // Create history modal (similar to config-editor.js but with fiber-specific handling)
+            const modal = this.createConfigHistoryModal(history);
+            document.body.appendChild(modal);
+
+            // Show modal
+            modal.style.display = 'flex';
+
+            // Close handler
+            const closeBtn = modal.querySelector('.history-close');
+            closeBtn.addEventListener('click', () => {
+                modal.remove();
+            });
+        } catch (error) {
+            this.showStatus(`Error loading history: ${error.message}`, 'error');
+            console.error('Failed to load history:', error);
+        }
+    }
+
+    createConfigHistoryModal(history) {
+        const modal = document.createElement('div');
+        modal.className = 'config-history-modal';
+        modal.style.cssText = `
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            align-items: center;
+            justify-content: center;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: var(--bg-secondary, #2a2a2a);
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            color: var(--text-primary, #e0e0e0);
+        `;
+
+        content.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3>Configuration History</h3>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button class="history-view-btn btn btn-secondary" disabled>View</button>
+                    <button class="history-activate-btn btn btn-primary" disabled>Activate</button>
+                    <button class="history-close" style="background: none; border: none; color: inherit; font-size: 24px; cursor: pointer;">&times;</button>
+                </div>
+            </div>
+            <div class="history-list">
+                ${this.renderConfigHistoryList(history.versions)}
+            </div>
+        `;
+
+        modal.appendChild(content);
+
+        // Setup event handlers for fiber-specific behavior
+        this.setupConfigHistoryModalHandlers(modal, history.versions);
+
+        return modal;
+    }
+
+    renderConfigHistoryList(versions) {
+        if (versions.length === 0) {
+            return '<p>No version history available.</p>';
+        }
+
+        return versions.map(version => {
+            const date = new Date(version.created_at).toLocaleString();
+            const hashShort = version.version_hash.substring(0, 8);
+            const activeLabel = version.is_active ? ' <span style="color: #4caf50;">(Active)</span>' : '';
+
+            return `
+                <div class="history-item" style="border-bottom: 1px solid #444; padding: 10px 0; cursor: pointer; transition: background-color 0.2s;" data-hash="${version.version_hash}">
+                    <div><strong>${date}</strong>  ${activeLabel}</div>
+                    <div style="font-family: monospace; font-size: 0.9em; color: #aaa;">
+                        ${hashShort} - ${version.source}
+                        ${version.parent_hash ? `(parent: ${version.parent_hash.substring(0, 8)})` : '(root)'}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    setupConfigHistoryModalHandlers(modal, versions) {
+        const viewBtn = modal.querySelector('.history-view-btn');
+        const activateBtn = modal.querySelector('.history-activate-btn');
+        const historyItems = modal.querySelectorAll('.history-item');
+
+        // Reset selected version
+        this.selectedVersionHash = null;
+
+        // Add click handlers to history items
+        historyItems.forEach(item => {
+            item.addEventListener('click', () => {
+                const hash = item.getAttribute('data-hash');
+
+                // Update selection
+                this.selectedVersionHash = hash;
+
+                // Update visual selection
+                historyItems.forEach(i => {
+                    if (i === item) {
+                        i.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
+                        i.style.borderLeft = '3px solid #4caf50';
+                        i.style.paddingLeft = '7px';
+                    } else {
+                        i.style.backgroundColor = '';
+                        i.style.borderLeft = '';
+                        i.style.paddingLeft = '';
+                    }
+                });
+
+                // Enable buttons
+                viewBtn.disabled = false;
+                activateBtn.disabled = false;
+            });
+        });
+
+        // View button handler - fiber-specific: extract just the fiber_type YAML
+        viewBtn.addEventListener('click', async () => {
+            if (!this.selectedVersionHash || !this.selectedType) {
+                if (!this.selectedType) {
+                    this.showStatus('Please select a fiber type first', 'error');
+                }
+                return;
+            }
+
+            try {
+                // Use the new API endpoint to get the fiber type from the specific version
+                // This preserves the original YAML formatting without re-serialization
+                const fiberTypeData = await this.api.getFiberTypeFromVersion(
+                    this.selectedVersionHash,
+                    this.selectedType
+                );
+
+                // Get the full config version metadata
+                const version = await this.api.getConfigVersion(this.selectedVersionHash);
+
+                // Update the current config version to the one being viewed
+                this.currentConfigVersion = version;
+
+                // Load into editor (this will be the preserved original YAML)
+                this.setEditorValue(fiberTypeData.yaml_content);
+                this.originalYaml = fiberTypeData.yaml_content;
+                this.hasUnsavedChanges = false;
+
+                // Update the config version indicator
+                this.updateConfigVersionIndicator();
+
+                // Update button states
+                this.updateButtonStates();
+
+                // Close modal
+                modal.remove();
+
+                const hashShort = version.version_hash.substring(0, 8);
+                this.showStatus(`Viewing fiber type from version ${hashShort}`, 'info');
+            } catch (error) {
+                this.showStatus(`Error loading version: ${error.message}`, 'error');
+                console.error('Failed to load config version:', error);
+            }
+        });
+
+        // Activate button handler - activates the selected config version
+        activateBtn.addEventListener('click', async () => {
+            if (!this.selectedVersionHash) return;
+
+            const hashShort = this.selectedVersionHash.substring(0, 8);
+
+            const confirmed = confirm(
+                `Activate config version ${hashShort}?\n\n` +
+                'This will:\n' +
+                '- Mark this version as active\n' +
+                '- Activate ALL fiber types with rules from this version\n' +
+                '- Close all open fibers\n\n' +
+                'Continue?'
+            );
+
+            if (!confirmed) return;
+
+            try {
+                this.showStatus('Activating config version...', 'info');
+                await this.api.activateConfigVersion(this.selectedVersionHash);
+
+                // Reload config version
+                await this.loadConfigVersion();
+
+                // Reload fiber types list in case anything changed
+                await this.loadFiberTypes();
+
+                // If current fiber type is still selected, reload it
+                if (this.selectedType) {
+                    await this.selectFiberType(this.selectedType);
+                }
+
+                // Close modal
+                modal.remove();
+
+                this.showStatus(`Config version ${hashShort} activated successfully!`, 'success');
+            } catch (error) {
+                this.showStatus(`Error activating version: ${error.message}`, 'error');
+                console.error('Failed to activate config version:', error);
+            }
+        });
     }
 }
 

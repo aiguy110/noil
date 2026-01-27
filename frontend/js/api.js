@@ -120,9 +120,19 @@ class NoilAPI {
         return this.request(`/api/config/diff/${hash1}/${hash2}`);
     }
 
+    async activateConfigVersion(hash) {
+        return this.request(`/api/config/activate/${hash}`, {
+            method: 'POST',
+        });
+    }
+
     // Fiber Type Management
     async getFiberType(name) {
         return this.request(`/api/fiber-types/${encodeURIComponent(name)}`);
+    }
+
+    async getFiberTypeFromVersion(hash, name) {
+        return this.request(`/api/config/versions/${hash}/fiber_types/${encodeURIComponent(name)}`);
     }
 
     async updateFiberType(name, yamlContent) {
@@ -145,7 +155,7 @@ class NoilAPI {
         });
     }
 
-    async hotReloadFiberType(name) {
+    async activateFiberType(name) {
         return this.request(`/api/fiber-types/${encodeURIComponent(name)}/hot-reload`, {
             method: 'POST',
         });

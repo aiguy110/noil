@@ -10,11 +10,12 @@ use crate::reprocessing::ReprocessState;
 use crate::storage::Storage;
 
 use super::api::{
-    cancel_reprocessing, create_fiber_type, delete_fiber_type, get_config_diff,
-    get_config_history, get_config_version, get_current_config, get_fiber, get_fiber_logs,
-    get_fiber_type, get_log, get_log_fibers, get_reprocess_status, health_check,
-    hot_reload_fiber_type, list_fiber_types, list_fibers, list_logs, list_sources,
-    start_reprocessing, test_working_set, update_config, update_fiber_type, AppState,
+    activate_config_version, cancel_reprocessing, create_fiber_type, delete_fiber_type,
+    get_config_diff, get_config_history, get_config_version, get_current_config, get_fiber,
+    get_fiber_logs, get_fiber_type, get_fiber_type_from_version, get_log, get_log_fibers,
+    get_reprocess_status, health_check, hot_reload_fiber_type, list_fiber_types, list_fibers,
+    list_logs, list_sources, start_reprocessing, test_working_set, update_config,
+    update_fiber_type, AppState,
 };
 
 /// Start the web server with the given storage backend and configuration
@@ -63,8 +64,10 @@ pub async fn run_server(
         .route("/api/config/current", get(get_current_config))
         .route("/api/config/history", get(get_config_history))
         .route("/api/config/versions/:hash", get(get_config_version))
+        .route("/api/config/versions/:hash/fiber_types/:name", get(get_fiber_type_from_version))
         .route("/api/config", put(update_config))
         .route("/api/config/diff/:hash1/:hash2", get(get_config_diff))
+        .route("/api/config/activate/:hash", post(activate_config_version))
         .route("/api/reprocess", post(start_reprocessing))
         .route("/api/reprocess/status", get(get_reprocess_status))
         .route("/api/reprocess/cancel", post(cancel_reprocessing))

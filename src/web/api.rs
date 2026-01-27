@@ -655,9 +655,17 @@ pub async fn update_config(
         ));
     }
 
-    // Note: We validate the config but don't save it to the database.
-    // Global config changes (sources, pipeline, storage, web) require a restart to take effect.
-    // Only fiber_types support hot-reloading. The user must manually update the config file and restart.
+    // Save the config version to the database
+    // Note: This creates a new inactive version. To activate it, use the activate endpoint.
+    // Global config changes (sources, pipeline, storage, web) require activation to take effect.
+    // Fiber_types can be individually hot-reloaded or activated as a batch.
+    state.storage.insert_config_version(&new_version).await?;
+
+    // Also update the in-memory YAML for consistency
+    {
+        let mut config_yaml_guard = state.config_yaml.write().await;
+        *config_yaml_guard = new_version.yaml_content.clone();
+    }
 
     Ok(Json(ConfigVersionDto::from(new_version)))
 }
@@ -693,6 +701,84 @@ pub async fn get_config_diff(
     }))
 }
 
+/// POST /api/config/activate/:hash
+/// Activates a config version by hash, marking it active and hot-reloading all fiber types
+pub async fn activate_config_version(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+) -> Result<Json<SuccessResponse>, ApiError> {
+    // 1. Check if reprocessing is running
+    {
+        let reprocess_guard = state.reprocess_state.read().await;
+        if let Some(reprocess) = reprocess_guard.as_ref() {
+            if matches!(reprocess.status, ReprocessStatus::Running) {
+                return Err(ApiError::Conflict(
+                    "Cannot activate config while reprocessing is running".to_string(),
+                ));
+            }
+        }
+    }
+
+    // 2. Get the config version to activate
+    let config_version = state
+        .storage
+        .get_config_version(&hash)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Config version not found: {}", hash)))?;
+
+    // 3. Parse the YAML into a Config struct to validate it
+    let new_config: Config = serde_yaml::from_str(&config_version.yaml_content)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid config YAML: {}", e)))?;
+
+    // 4. Acquire write locks (blocks in-flight log processing)
+    let mut processor_guard = state.fiber_processor.write().await;
+    let mut version_guard = state.config_version.write().await;
+    let mut config_guard = state.config.write().await;
+
+    // 5. Flush old processor (closes all open fibers)
+    let flush_results = processor_guard.flush();
+
+    // Write flush results to storage
+    for result in flush_results {
+        for fiber in &result.new_fibers {
+            state.storage.write_fiber(fiber).await?;
+        }
+        for fiber in &result.updated_fibers {
+            state.storage.update_fiber(fiber).await?;
+        }
+        if !result.memberships.is_empty() {
+            state.storage.write_memberships(&result.memberships).await?;
+        }
+    }
+
+    // 6. Compute new version number from hash
+    let new_version = hash
+        .parse::<u64>()
+        .unwrap_or_else(|_| config_version.yaml_content.as_bytes().iter().map(|&b| b as u64).sum());
+
+    // 7. Create new processor with the new config
+    let new_processor = FiberProcessor::from_config(&new_config, new_version)
+        .map_err(|e| ApiError::Internal(format!("Failed to create processor: {}", e)))?;
+
+    // 8. Replace processor, config, and version
+    *processor_guard = new_processor;
+    *config_guard = new_config;
+    *version_guard = new_version;
+
+    // 9. Update in-memory YAML
+    {
+        let mut config_yaml_guard = state.config_yaml.write().await;
+        *config_yaml_guard = config_version.yaml_content.clone();
+    }
+
+    // 10. Mark this version as active in database
+    state.storage.mark_config_active(&hash).await?;
+
+    Ok(Json(SuccessResponse {
+        message: format!("Config version {} activated successfully", &hash[..8]),
+    }))
+}
+
 // ============================================================================
 // Fiber Type Management API
 // ============================================================================
@@ -719,6 +805,39 @@ pub async fn get_fiber_type(
         .ok_or_else(|| ApiError::Internal("No active config version found".to_string()))?;
 
     let yaml = extract_fiber_type_yaml_with_name(&active_version.yaml_content, &name)?;
+
+    Ok(Json(FiberTypeResponse {
+        name,
+        yaml_content: yaml,
+        is_source_fiber,
+    }))
+}
+
+/// GET /api/config/versions/:hash/fiber_types/:name
+/// Get a fiber type from a specific config version (preserving original YAML)
+pub async fn get_fiber_type_from_version(
+    State(state): State<AppState>,
+    Path((hash, name)): Path<(String, String)>,
+) -> Result<Json<FiberTypeResponse>, ApiError> {
+    // Get the specified config version
+    let version = state
+        .storage
+        .get_config_version(&hash)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Config version '{}' not found", hash)))?;
+
+    // Extract the fiber type YAML while preserving formatting
+    let yaml = extract_fiber_type_yaml_with_name(&version.yaml_content, &name)?;
+
+    // Parse to check if it's a source fiber (just for the flag, not for modification)
+    let config: Config = serde_yaml::from_str(&version.yaml_content)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
+
+    let is_source_fiber = config
+        .fiber_types
+        .get(&name)
+        .map(|ft| ft.is_source_fiber)
+        .unwrap_or(false);
 
     Ok(Json(FiberTypeResponse {
         name,

@@ -207,10 +207,15 @@
                         <!-- Main editor area -->
                         <div class="fiber-editor-main">
                             <div class="fiber-editor-header">
-                                <h4>Editing: <span id="fiber-type-name-page">-</span></h4>
+                                <div style="display: flex; flex-direction: column; gap: 5px;">
+                                    <h4>Editing: <span id="fiber-type-name-page">-</span></h4>
+                                    <div id="fiber-config-version-indicator" class="config-version-indicator" style="font-size: 0.85em; color: var(--text-secondary, #aaa); cursor: pointer;" title="Click to view config history">
+                                        Config Version: <span id="fiber-config-version-hash">-</span> <span id="fiber-config-version-status">(-)</span>
+                                    </div>
+                                </div>
                                 <div class="fiber-editor-actions">
                                     <button id="fiber-save-page" class="btn btn-primary" disabled>Save</button>
-                                    <button id="fiber-hot-reload-page" class="btn btn-success" disabled>Hot Reload</button>
+                                    <button id="fiber-hot-reload-page" class="btn btn-success" disabled>Activate</button>
                                     <button id="fiber-delete-page" class="btn btn-danger" disabled>Delete</button>
                                 </div>
                             </div>
@@ -311,7 +316,7 @@
                     <!-- Configuration Tab -->
                     <div id="modal-tab-config" class="modal-tab-content">
                         <div class="config-notice">
-                            <strong>Note:</strong> Global configuration changes (sources, pipeline, storage, web) require a restart to take effect. Fiber types can be hot-reloaded in the Fiber Processing tab.
+                            <strong>Note:</strong> Global configuration changes (sources, pipeline, storage, web) require a restart to take effect. Fiber types can be activated in the Fiber Processing tab.
                         </div>
                         <div class="config-editor-toolbar">
                             <button id="config-save" class="btn btn-primary">Save Configuration</button>
