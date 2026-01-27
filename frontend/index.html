@@ -28,9 +28,18 @@
         </div>
     </header>
 
+    <!-- Hamburger Dropdown Menu -->
+    <div id="hamburger-dropdown" class="hamburger-dropdown">
+        <button class="hamburger-menu-item" data-page="log-view">Log View</button>
+        <button class="hamburger-menu-item" data-page="fiber-rules">Fiber Rules</button>
+        <button class="hamburger-menu-item" data-action="settings">Settings</button>
+    </div>
+
     <div id="app">
-        <!-- Left Collapsible Drawer -->
-        <aside id="drawer" class="drawer">
+        <!-- Log View Page -->
+        <div id="log-view-page" class="page active">
+            <!-- Left Collapsible Drawer -->
+            <aside id="drawer" class="drawer">
             <div class="drawer-header">
                 <button id="drawer-toggle" class="drawer-toggle" aria-label="Toggle drawer">
                     <span class="icon">◀</span>
@@ -173,11 +182,103 @@
                 </div>
             </section>
         </main>
+        </div>
+        <!-- End Log View Page -->
+
+        <!-- Fiber Rules Page -->
+        <div id="fiber-rules-page" class="page">
+            <div class="page-container">
+                <div class="page-header">
+                    <h1>Fiber Rules</h1>
+                </div>
+                <div class="page-content">
+                    <div class="fiber-processing-layout fiber-processing-fullpage">
+                        <!-- Sidebar with fiber type list -->
+                        <div class="fiber-type-sidebar">
+                            <div class="fiber-type-header">
+                                <h4>Fiber Types</h4>
+                                <button id="new-fiber-type-page" class="btn btn-small btn-secondary">+ New</button>
+                            </div>
+                            <div id="fiber-type-list-page" class="fiber-type-list">
+                                <!-- Populated by fiber-processing.js -->
+                            </div>
+                        </div>
+
+                        <!-- Main editor area -->
+                        <div class="fiber-editor-main">
+                            <div class="fiber-editor-header">
+                                <h4>Editing: <span id="fiber-type-name-page">-</span></h4>
+                                <div class="fiber-editor-actions">
+                                    <button id="fiber-save-page" class="btn btn-primary" disabled>Save</button>
+                                    <button id="fiber-hot-reload-page" class="btn btn-success" disabled>Hot Reload</button>
+                                    <button id="fiber-delete-page" class="btn btn-danger" disabled>Delete</button>
+                                </div>
+                            </div>
+
+                            <textarea id="fiber-yaml-editor-page" class="fiber-yaml-editor" spellcheck="false" disabled placeholder="Select a fiber type to edit..."></textarea>
+
+                            <div id="fiber-status-page" class="fiber-status"></div>
+
+                            <div class="reprocess-section">
+                                <h4>Reprocess Historical Logs</h4>
+                                <p>Re-run fiber processing on all ingested logs with current fiber type rules.</p>
+                                <button id="start-reprocess-page" class="btn btn-primary">Reprocess Logs</button>
+
+                                <!-- Progress bar (hidden by default) -->
+                                <div id="reprocess-progress-page" class="reprocess-progress" style="display: none;">
+                                    <div class="progress-bar">
+                                        <div id="reprocess-progress-bar-page" class="progress-bar-fill"></div>
+                                    </div>
+                                    <div class="progress-stats">
+                                        <span id="reprocess-status-text-page">Processing...</span>
+                                        <span id="reprocess-progress-text-page">0 / 0 logs</span>
+                                    </div>
+                                    <button id="cancel-reprocess-page" class="btn btn-secondary">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Working Set Panel -->
+                        <div class="working-set-panel">
+                            <div class="working-set-header">
+                                <h4>Working Set (<span id="working-set-count">0</span>)</h4>
+                                <div class="working-set-actions">
+                                    <button id="working-set-clear" class="btn btn-small btn-secondary">Clear</button>
+                                    <button id="working-set-test" class="btn btn-small btn-primary">Test Rules</button>
+                                </div>
+                            </div>
+                            <div id="working-set-content" class="working-set-content">
+                                <div class="working-set-empty">
+                                    <p>No logs in working set.</p>
+                                    <p>Right-click logs in the Log View to add them.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- End Fiber Rules Page -->
     </div>
 
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay" style="display: none;">
         <div class="spinner"></div>
+    </div>
+
+    <!-- Test Results Modal -->
+    <div id="test-results-modal" class="modal" style="display: none;">
+        <div class="modal-content test-results-modal-content">
+            <div class="modal-header">
+                <h2>Test Results</h2>
+                <button id="close-test-results-modal" class="modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body test-results-body">
+                <div id="test-results-content">
+                    <!-- Test results will be populated dynamically -->
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Settings Modal -->
@@ -191,7 +292,7 @@
                 <div class="modal-sidebar">
                     <button class="modal-tab-btn active" data-modal-tab="colors">Colors</button>
                     <button class="modal-tab-btn" data-modal-tab="config">Configuration</button>
-                    <button class="modal-tab-btn" data-modal-tab="fiber-processing">Fiber Processing</button>
+                    <button class="modal-tab-btn" data-modal-tab="themes">Editor Themes</button>
                     <!-- Future tabs can be added here -->
                 </div>
                 <div class="modal-content-area">
@@ -226,54 +327,22 @@
                         </div>
                     </div>
 
-                    <!-- Fiber Processing Tab -->
-                    <div id="modal-tab-fiber-processing" class="modal-tab-content">
-                        <h3>Fiber Processing</h3>
+                    <!-- Editor Themes Tab -->
+                    <div id="modal-tab-themes" class="modal-tab-content">
+                        <h3>Editor Theme Settings</h3>
+                        <p>Choose a color theme for all CodeMirror editors (Fiber Rules and Configuration editors).</p>
 
-                        <div class="fiber-processing-layout">
-                            <!-- Sidebar with fiber type list -->
-                            <div class="fiber-type-sidebar">
-                                <div class="fiber-type-header">
-                                    <h4>Fiber Types</h4>
-                                    <button id="new-fiber-type" class="btn btn-small btn-secondary">+ New</button>
-                                </div>
-                                <div id="fiber-type-list" class="fiber-type-list">
-                                    <!-- Populated by fiber-processing.js -->
-                                </div>
+                        <div class="theme-selector-section">
+                            <h4>Select Theme</h4>
+                            <div class="theme-list" id="theme-list">
+                                <!-- Populated dynamically -->
                             </div>
+                        </div>
 
-                            <!-- Main editor area -->
-                            <div class="fiber-editor-main">
-                                <div class="fiber-editor-header">
-                                    <h4>Editing: <span id="fiber-type-name">-</span></h4>
-                                    <div class="fiber-editor-actions">
-                                        <button id="fiber-save" class="btn btn-primary" disabled>Save</button>
-                                        <button id="fiber-hot-reload" class="btn btn-success" disabled>Hot Reload</button>
-                                        <button id="fiber-delete" class="btn btn-danger" disabled>Delete</button>
-                                    </div>
-                                </div>
-
-                                <textarea id="fiber-yaml-editor" class="fiber-yaml-editor" spellcheck="false" disabled placeholder="Select a fiber type to edit..."></textarea>
-
-                                <div id="fiber-status" class="fiber-status"></div>
-
-                                <div class="reprocess-section">
-                                    <h4>Reprocess Historical Logs</h4>
-                                    <p>Re-run fiber processing on all ingested logs with current fiber type rules.</p>
-                                    <button id="start-reprocess" class="btn btn-primary">Reprocess Logs</button>
-
-                                    <!-- Progress bar (hidden by default) -->
-                                    <div id="reprocess-progress" class="reprocess-progress" style="display: none;">
-                                        <div class="progress-bar">
-                                            <div id="reprocess-progress-bar" class="progress-bar-fill"></div>
-                                        </div>
-                                        <div class="progress-stats">
-                                            <span id="reprocess-status-text">Processing...</span>
-                                            <span id="reprocess-progress-text">0 / 0 logs</span>
-                                        </div>
-                                        <button id="cancel-reprocess" class="btn btn-secondary">Cancel</button>
-                                    </div>
-                                </div>
+                        <div class="theme-preview-section">
+                            <h4>Preview</h4>
+                            <div class="theme-preview-editor-wrapper">
+                                <textarea id="theme-preview-editor" spellcheck="false"></textarea>
                             </div>
                         </div>
                     </div>
@@ -284,12 +353,17 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
+
+    <!-- CodeMirror 6 (loaded from local files) -->
+    <script type="module" src="vendor/codemirror-loader.js"></script>
+
     <script src="js/api.js"></script>
     <script src="js/colors.js"></script>
     <script src="js/timeline.js"></script>
     <script src="js/logviewer.js"></script>
     <script src="js/config-editor.js"></script>
     <script src="js/fiber-processing.js"></script>
+    <script src="js/theme-manager.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
  * Handles fiber type editing with hot-reload and reprocessing
  */
 class FiberProcessingEditor {
-    constructor(api) {
+    constructor(api, elementIds = {}) {
         this.api = api;
         this.fiberTypes = [];
         this.selectedType = null;
@@ -11,30 +11,54 @@ class FiberProcessingEditor {
         this.hasUnsavedChanges = false;
         this.reprocessPollInterval = null;
         this.elements = {};
+        this.editorView = null; // CodeMirror editor instance
+        this.editableCompartment = null; // Compartment for dynamic reconfiguration
+        this.elementIds = {
+            typeListEl: 'fiber-type-list',
+            typeNameEl: 'fiber-type-name',
+            editorEl: 'fiber-yaml-editor',
+            saveBtnEl: 'fiber-save',
+            hotReloadBtnEl: 'fiber-hot-reload',
+            deleteBtnEl: 'fiber-delete',
+            newBtnEl: 'new-fiber-type',
+            statusEl: 'fiber-status',
+            reprocessBtnEl: 'start-reprocess',
+            reprocessProgressEl: 'reprocess-progress',
+            reprocessProgressBarEl: 'reprocess-progress-bar',
+            reprocessStatusTextEl: 'reprocess-status-text',
+            reprocessProgressTextEl: 'reprocess-progress-text',
+            cancelReprocessBtnEl: 'cancel-reprocess',
+            ...elementIds
+        };
     }
 
     async init() {
         // Get DOM elements
         this.elements = {
-            typeList: document.getElementById('fiber-type-list'),
-            typeName: document.getElementById('fiber-type-name'),
-            editor: document.getElementById('fiber-yaml-editor'),
-            saveBtn: document.getElementById('fiber-save'),
-            hotReloadBtn: document.getElementById('fiber-hot-reload'),
-            deleteBtn: document.getElementById('fiber-delete'),
-            newBtn: document.getElementById('new-fiber-type'),
-            status: document.getElementById('fiber-status'),
-            reprocessBtn: document.getElementById('start-reprocess'),
-            reprocessProgress: document.getElementById('reprocess-progress'),
-            reprocessProgressBar: document.getElementById('reprocess-progress-bar'),
-            reprocessStatusText: document.getElementById('reprocess-status-text'),
-            reprocessProgressText: document.getElementById('reprocess-progress-text'),
-            cancelReprocessBtn: document.getElementById('cancel-reprocess'),
+            typeList: document.getElementById(this.elementIds.typeListEl),
+            typeName: document.getElementById(this.elementIds.typeNameEl),
+            editorContainer: document.getElementById(this.elementIds.editorEl),
+            saveBtn: document.getElementById(this.elementIds.saveBtnEl),
+            hotReloadBtn: document.getElementById(this.elementIds.hotReloadBtnEl),
+            deleteBtn: document.getElementById(this.elementIds.deleteBtnEl),
+            newBtn: document.getElementById(this.elementIds.newBtnEl),
+            status: document.getElementById(this.elementIds.statusEl),
+            reprocessBtn: document.getElementById(this.elementIds.reprocessBtnEl),
+            reprocessProgress: document.getElementById(this.elementIds.reprocessProgressEl),
+            reprocessProgressBar: document.getElementById(this.elementIds.reprocessProgressBarEl),
+            reprocessStatusText: document.getElementById(this.elementIds.reprocessStatusTextEl),
+            reprocessProgressText: document.getElementById(this.elementIds.reprocessProgressTextEl),
+            cancelReprocessBtn: document.getElementById(this.elementIds.cancelReprocessBtnEl),
         };
 
-        // Initialize editor to empty state (no fiber type selected)
-        this.elements.editor.value = '';
-        this.elements.editor.disabled = true;
+        // Initialize CodeMirror editor
+        try {
+            await this.initCodeMirror();
+        } catch (error) {
+            console.warn('Failed to initialize CodeMirror, falling back to textarea:', error);
+            // Fall back to using the textarea directly
+            this.useFallbackEditor();
+        }
 
         // Load fiber types
         await this.loadFiberTypes();
@@ -42,11 +66,205 @@ class FiberProcessingEditor {
         // Setup event listeners
         this.setupEventListeners();
 
+        // Initialize working set panel
+        this.initWorkingSetPanel();
+
         // Update button states to reflect no selection
         this.updateButtonStates();
 
         // Check for running reprocess
         this.checkReprocessStatus();
+    }
+
+    useFallbackEditor() {
+        // If CodeMirror fails, just use the textarea
+        const textarea = this.elements.editorContainer;
+        if (textarea) {
+            textarea.style.display = 'block';
+            textarea.disabled = true;
+            textarea.value = '';
+            // Set up editor wrapper functions to use textarea
+            this.editorView = null;
+        }
+    }
+
+    async initCodeMirror() {
+        // Wait for CodeMirror to be loaded (with timeout)
+        if (!window.CodeMirror && !window.CodeMirrorLoadError) {
+            // Wait for the codemirror-ready event or error
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('CodeMirror failed to load (timeout)'));
+                }, 10000); // 10 second timeout
+
+                const onReady = () => {
+                    clearTimeout(timeout);
+                    window.removeEventListener('codemirror-ready', onReady);
+                    resolve();
+                };
+
+                const checkError = setInterval(() => {
+                    if (window.CodeMirrorLoadError) {
+                        clearTimeout(timeout);
+                        clearInterval(checkError);
+                        window.removeEventListener('codemirror-ready', onReady);
+                        reject(window.CodeMirrorLoadError);
+                    }
+                }, 100);
+
+                window.addEventListener('codemirror-ready', onReady);
+
+                // Check if it's already loaded
+                if (window.CodeMirror) {
+                    clearTimeout(timeout);
+                    clearInterval(checkError);
+                    window.removeEventListener('codemirror-ready', onReady);
+                    resolve();
+                }
+            });
+        }
+
+        if (window.CodeMirrorLoadError) {
+            throw new Error('CodeMirror failed to load: ' + window.CodeMirrorLoadError.message);
+        }
+
+        if (!window.CodeMirror) {
+            throw new Error('CodeMirror is not available');
+        }
+
+        const { EditorView, EditorState, Compartment, basicSetup, yaml } = window.CodeMirror;
+
+        // Verify all required components are present
+        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml) {
+            throw new Error('CodeMirror components are incomplete');
+        }
+
+        // Create compartment for editable state (allows dynamic reconfiguration)
+        this.editableCompartment = new Compartment();
+
+        // Create editor state with YAML syntax highlighting
+        const startState = EditorState.create({
+            doc: '',
+            extensions: [
+                basicSetup,
+                yaml,
+                EditorView.updateListener.of((update) => {
+                    if (update.docChanged) {
+                        this.handleEditorChange();
+                    }
+                }),
+                EditorState.tabSize.of(2),
+                this.editableCompartment.of(EditorView.editable.of(false)), // Start disabled
+            ]
+        });
+
+        // Replace textarea with CodeMirror
+        const textarea = this.elements.editorContainer;
+        if (!textarea) {
+            throw new Error('Editor textarea element not found');
+        }
+
+        // Hide textarea but keep it in DOM for reference
+        textarea.style.display = 'none';
+
+        // Create a wrapper div for CodeMirror to maintain proper flex layout
+        const editorWrapper = document.createElement('div');
+        editorWrapper.className = 'cm-editor-wrapper';
+
+        // Insert wrapper right after textarea
+        textarea.parentElement.insertBefore(editorWrapper, textarea.nextSibling);
+
+        // Create CodeMirror editor inside the wrapper
+        this.editorView = new EditorView({
+            state: startState,
+            parent: editorWrapper
+        });
+
+        if (!this.editorView || !this.editorView.dom) {
+            throw new Error('Failed to create CodeMirror editor');
+        }
+
+        // Add placeholder attribute
+        this.editorView.dom.setAttribute('data-placeholder', 'Select a fiber type to edit...');
+
+        // Set initial disabled styling
+        this.setEditorEnabled(false);
+    }
+
+    handleEditorChange() {
+        const yaml = this.editorView.state.doc.toString();
+        this.hasUnsavedChanges = yaml !== this.originalYaml;
+
+        // Update displayed name if the fiber type name changed in the YAML
+        try {
+            const parsed = jsyaml.load(yaml);
+            if (parsed && typeof parsed === 'object') {
+                const keys = Object.keys(parsed);
+                if (keys.length === 1) {
+                    const newName = keys[0];
+                    if (newName !== this.selectedType) {
+                        this.elements.typeName.textContent = `${this.selectedType} → ${newName}`;
+                    } else {
+                        this.elements.typeName.textContent = this.selectedType;
+                    }
+                }
+            }
+        } catch (e) {
+            // Invalid YAML, ignore
+        }
+
+        this.updateButtonStates();
+    }
+
+    setEditorValue(value) {
+        if (this.editorView) {
+            // CodeMirror mode
+            this.editorView.dispatch({
+                changes: {
+                    from: 0,
+                    to: this.editorView.state.doc.length,
+                    insert: value
+                }
+            });
+        } else if (this.elements.editorContainer) {
+            // Fallback textarea mode
+            this.elements.editorContainer.value = value;
+        }
+    }
+
+    getEditorValue() {
+        if (this.editorView) {
+            // CodeMirror mode
+            return this.editorView.state.doc.toString();
+        } else if (this.elements.editorContainer) {
+            // Fallback textarea mode
+            return this.elements.editorContainer.value;
+        }
+        return '';
+    }
+
+    setEditorEnabled(enabled) {
+        if (this.editorView && this.editableCompartment && window.CodeMirror) {
+            // CodeMirror mode
+            const { EditorView } = window.CodeMirror;
+
+            // Reconfigure the editable state using the compartment
+            this.editorView.dispatch({
+                effects: this.editableCompartment.reconfigure(EditorView.editable.of(enabled))
+            });
+
+            // Update styling to show disabled state
+            if (enabled) {
+                this.editorView.dom.style.opacity = '1';
+                this.editorView.dom.style.cursor = 'text';
+            } else {
+                this.editorView.dom.style.opacity = '0.6';
+                this.editorView.dom.style.cursor = 'not-allowed';
+            }
+        } else if (this.elements.editorContainer) {
+            // Fallback textarea mode
+            this.elements.editorContainer.disabled = !enabled;
+        }
     }
 
     setupEventListeners() {
@@ -70,32 +288,6 @@ class FiberProcessingEditor {
             this.showNewFiberTypeDialog();
         });
 
-        // Editor change tracking
-        this.elements.editor.addEventListener('input', () => {
-            this.hasUnsavedChanges = this.elements.editor.value !== this.originalYaml;
-
-            // Update displayed name if the fiber type name changed in the YAML
-            try {
-                const yaml = this.elements.editor.value;
-                const parsed = jsyaml.load(yaml);
-                if (parsed && typeof parsed === 'object') {
-                    const keys = Object.keys(parsed);
-                    if (keys.length === 1) {
-                        const newName = keys[0];
-                        if (newName !== this.selectedType) {
-                            this.elements.typeName.textContent = `${this.selectedType} → ${newName}`;
-                        } else {
-                            this.elements.typeName.textContent = this.selectedType;
-                        }
-                    }
-                }
-            } catch (e) {
-                // Invalid YAML, ignore
-            }
-
-            this.updateButtonStates();
-        });
-
         // Reprocess button
         this.elements.reprocessBtn.addEventListener('click', () => {
             this.showReprocessDialog();
@@ -105,6 +297,13 @@ class FiberProcessingEditor {
         this.elements.cancelReprocessBtn.addEventListener('click', () => {
             this.cancelReprocessing();
         });
+
+        // Editor change tracking for fallback textarea mode
+        if (!this.editorView && this.elements.editorContainer) {
+            this.elements.editorContainer.addEventListener('input', () => {
+                this.handleEditorChange();
+            });
+        }
     }
 
     async loadFiberTypes() {
@@ -118,7 +317,10 @@ class FiberProcessingEditor {
     }
 
     renderTypeList() {
-        if (!this.elements.typeList) return;
+        if (!this.elements.typeList) {
+            console.error('typeList element not found!');
+            return;
+        }
 
         // Filter out auto-generated source fibers
         const userFiberTypes = this.fiberTypes.filter(ft => !ft.is_source_fiber);
@@ -163,8 +365,8 @@ class FiberProcessingEditor {
 
             // Update UI
             this.elements.typeName.textContent = name;
-            this.elements.editor.value = data.yaml_content;
-            this.elements.editor.disabled = false;
+            this.setEditorValue(data.yaml_content);
+            this.setEditorEnabled(true);
 
             // Update selected state in list
             this.elements.typeList.querySelectorAll('.fiber-type-item').forEach(item => {
@@ -195,22 +397,18 @@ class FiberProcessingEditor {
             return;
         }
 
-        const yaml = this.elements.editor.value;
-        console.log('YAML to save:', yaml);
+        const yaml = this.getEditorValue();
 
         // Validate YAML and check for name change
         let newName = this.selectedType;
         try {
             const parsed = jsyaml.load(yaml);
-            console.log('Parsed YAML:', parsed);
-            console.log('Type:', typeof parsed);
 
             if (!parsed || typeof parsed !== 'object') {
                 this.showStatus('YAML must be an object with a fiber type name', 'error');
                 return;
             }
             const keys = Object.keys(parsed);
-            console.log('Keys:', keys);
 
             if (keys.length !== 1) {
                 this.showStatus(`YAML must contain exactly one fiber type definition (found ${keys.length}: ${keys.join(', ')})`, 'error');
@@ -350,7 +548,8 @@ class FiberProcessingEditor {
             this.originalYaml = '';
             this.hasUnsavedChanges = false;
             this.elements.typeName.textContent = '-';
-            this.elements.editor.value = '';
+            this.setEditorValue('');
+            this.setEditorEnabled(false);
             this.updateButtonStates();
 
             await this.loadFiberTypes();
@@ -606,7 +805,7 @@ sources:
         this.elements.saveBtn.disabled = !hasSelection;
         this.elements.hotReloadBtn.disabled = !hasSelection;
         this.elements.deleteBtn.disabled = !hasSelection || isSourceFiber;
-        this.elements.editor.disabled = !hasSelection;
+        this.setEditorEnabled(hasSelection);
 
         // Hot reload button style - highlight if there are saved changes
         if (hasSelection && !this.hasUnsavedChanges) {
@@ -641,6 +840,404 @@ sources:
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // =========================================================================
+    // Working Set Panel
+    // =========================================================================
+
+    initWorkingSetPanel() {
+        // Get working set panel elements
+        const clearBtn = document.getElementById('working-set-clear');
+        const testBtn = document.getElementById('working-set-test');
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                if (window.app) {
+                    window.app.clearWorkingSet();
+                }
+            });
+        }
+
+        if (testBtn) {
+            testBtn.addEventListener('click', () => {
+                this.testWorkingSet();
+            });
+        }
+
+        // Initial render
+        this.renderWorkingSetPanel();
+    }
+
+    async renderWorkingSetPanel() {
+        const countEl = document.getElementById('working-set-count');
+        const contentEl = document.getElementById('working-set-content');
+
+        if (!window.app || !countEl || !contentEl) return;
+
+        const workingSet = window.app.getWorkingSet();
+        const logIds = workingSet.logIds;
+
+        // Update count
+        countEl.textContent = logIds.length;
+
+        // If empty, show empty state
+        if (logIds.length === 0) {
+            contentEl.innerHTML = `
+                <div class="working-set-empty">
+                    <p>No logs in working set.</p>
+                    <p>Right-click logs in the Log View to add them.</p>
+                </div>
+            `;
+            return;
+        }
+
+        // Render log items
+        contentEl.innerHTML = '';
+
+        for (const logId of logIds) {
+            try {
+                // Fetch log details if not in cache
+                let log = workingSet.logs[logId];
+                if (!log) {
+                    log = await this.api.getLog(logId);
+                    workingSet.logs[logId] = log;
+                }
+
+                // Fetch fiber memberships
+                let fiberData = await this.api.getLogFibers(logId);
+
+                const logItem = this.createWorkingSetLogItem(log, fiberData.fibers);
+                contentEl.appendChild(logItem);
+            } catch (error) {
+                console.error(`Failed to fetch log ${logId}:`, error);
+                // Remove from working set if it doesn't exist
+                if (error.message.includes('404')) {
+                    window.app.removeFromWorkingSet(logId);
+                }
+            }
+        }
+    }
+
+    createWorkingSetLogItem(log, fibers) {
+        const item = document.createElement('div');
+        item.className = 'working-set-log-item';
+        item.setAttribute('data-log-id', log.id);
+
+        // Format timestamp
+        const timestamp = new Date(log.timestamp);
+        const year = timestamp.getFullYear();
+        const month = String(timestamp.getMonth() + 1).padStart(2, '0');
+        const day = String(timestamp.getDate()).padStart(2, '0');
+        const hours = String(timestamp.getHours()).padStart(2, '0');
+        const minutes = String(timestamp.getMinutes()).padStart(2, '0');
+        const seconds = String(timestamp.getSeconds()).padStart(2, '0');
+        const ms = String(timestamp.getMilliseconds()).padStart(3, '0');
+        const timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+
+        // Source badge color
+        const sourceBadgeColor = colorManager.getFiberTypeColor(log.source_id);
+
+        // Truncate log text
+        const truncatedText = log.raw_text.length > 50
+            ? log.raw_text.substring(0, 50) + '...'
+            : log.raw_text;
+
+        // Build fiber badges
+        let fiberBadgesHtml = '';
+        if (fibers && fibers.length > 0) {
+            fiberBadgesHtml = '<div class="working-set-log-fibers">';
+            fibers.forEach(fiber => {
+                const fiberColor = colorManager.getFiberTypeColor(fiber.fiber_type);
+                fiberBadgesHtml += `
+                    <span class="working-set-fiber-badge" style="background-color: ${fiberColor};">
+                        ${this.escapeHtml(fiber.fiber_type)}
+                    </span>
+                `;
+            });
+            fiberBadgesHtml += '</div>';
+        }
+
+        item.innerHTML = `
+            <div class="working-set-log-timestamp">
+                ${timeStr}
+                <span class="working-set-log-source" style="background-color: ${sourceBadgeColor};">
+                    ${this.escapeHtml(log.source_id)}
+                </span>
+            </div>
+            <div class="working-set-log-text" title="${this.escapeHtml(log.raw_text)}">
+                ${this.escapeHtml(truncatedText)}
+            </div>
+            ${fiberBadgesHtml}
+            <button class="working-set-log-remove" title="Remove from working set">&times;</button>
+        `;
+
+        // Add remove button handler
+        const removeBtn = item.querySelector('.working-set-log-remove');
+        if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (window.app) {
+                    window.app.removeFromWorkingSet(log.id);
+                }
+            });
+        }
+
+        return item;
+    }
+
+    async testWorkingSet() {
+        if (!this.selectedType) {
+            this.showStatus('Please select a fiber type first', 'error');
+            return;
+        }
+
+        if (!window.app) {
+            this.showStatus('Application not initialized', 'error');
+            return;
+        }
+
+        const workingSet = window.app.getWorkingSet();
+        if (workingSet.logIds.length === 0) {
+            this.showStatus('Working set is empty. Add logs first.', 'error');
+            return;
+        }
+
+        // Get current YAML content from editor
+        const yamlContent = this.getEditorValue();
+
+        // Validate YAML
+        try {
+            const parsed = jsyaml.load(yamlContent);
+            if (!parsed || typeof parsed !== 'object') {
+                this.showStatus('Invalid YAML: must be an object', 'error');
+                return;
+            }
+            const keys = Object.keys(parsed);
+            if (keys.length !== 1) {
+                this.showStatus('Invalid YAML: must contain exactly one fiber type definition', 'error');
+                return;
+            }
+        } catch (error) {
+            this.showStatus(`Invalid YAML: ${error.message}`, 'error');
+            return;
+        }
+
+        // Show loading
+        this.showStatus('Testing working set...', 'info');
+
+        try {
+            // Call backend API to test working set
+            const result = await this.api.testWorkingSet(this.selectedType, workingSet.logIds, yamlContent);
+
+            // Show results modal
+            this.showTestResults(result);
+
+            this.showStatus('Test complete', 'success');
+        } catch (error) {
+            // Check if backend endpoint is not implemented yet
+            if (error.message.includes('404') || error.message.includes('not found')) {
+                this.showStatus('Backend API not yet implemented. Please implement the test-working-set endpoint first.', 'info');
+            } else {
+                this.showStatus(`Test failed: ${error.message}`, 'error');
+            }
+            console.error('Failed to test working set:', error);
+        }
+    }
+
+    showTestResults(result) {
+        const modal = document.getElementById('test-results-modal');
+        const content = document.getElementById('test-results-content');
+
+        if (!modal || !content) {
+            console.error('Test results modal not found');
+            return;
+        }
+
+        // Determine status
+        let statusHtml = '';
+        const bestMatch = result.fibers_generated[result.best_match_index];
+
+        if (bestMatch && bestMatch.iou === 1.0) {
+            statusHtml = `
+                <div class="test-result-status test-result-status-success">
+                    <span class="test-result-status-icon">✓</span>
+                    <div>
+                        <div>Perfect Match</div>
+                        <div style="font-size: 13px; font-weight: normal; margin-top: 4px;">
+                            Found fiber with exact match: ${result.expected_logs.length}/${result.expected_logs.length} logs
+                        </div>
+                        <div style="font-size: 12px; font-weight: normal; margin-top: 2px;">
+                            Fiber ID: ${bestMatch.fiber_id}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (bestMatch && bestMatch.iou > 0) {
+            statusHtml = `
+                <div class="test-result-status test-result-status-warning">
+                    <span class="test-result-status-icon">⚠</span>
+                    <div>
+                        <div>Partial Match - Best Result (IoU: ${bestMatch.iou.toFixed(2)})</div>
+                        <div style="font-size: 13px; font-weight: normal; margin-top: 4px;">
+                            Fiber ID: ${bestMatch.fiber_id}
+                        </div>
+                        <div style="font-size: 12px; font-weight: normal; margin-top: 2px;">
+                            • Missing from fiber: ${bestMatch.missing_logs.length} log${bestMatch.missing_logs.length !== 1 ? 's' : ''}
+                            <br>
+                            • Extra in fiber: ${bestMatch.extra_log_ids.length} log${bestMatch.extra_log_ids.length !== 1 ? 's' : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            statusHtml = `
+                <div class="test-result-status test-result-status-error">
+                    <span class="test-result-status-icon">✗</span>
+                    <div>
+                        <div>No Match Found</div>
+                        <div style="font-size: 13px; font-weight: normal; margin-top: 4px;">
+                            No fibers were generated that matched the working set logs.
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Build expected logs section
+        let expectedLogsHtml = '<div class="test-result-section"><h3>Expected Logs (' + result.expected_logs.length + ')</h3><div class="test-logs-list">';
+        result.expected_logs.forEach(log => {
+            const inBestMatch = bestMatch && bestMatch.matching_logs.includes(log.id);
+            const statusClass = inBestMatch ? 'match-success' : 'match-missing';
+            const statusText = inBestMatch ? '✓ In fiber' : '✗ Missing';
+            const statusTextClass = inBestMatch ? 'success' : 'missing';
+
+            const timestamp = new Date(log.timestamp);
+            const timeStr = this.formatTimestamp(timestamp);
+            const sourceColor = colorManager.getFiberTypeColor(log.source_id);
+
+            expectedLogsHtml += `
+                <div class="test-log-item ${statusClass}">
+                    <div class="test-log-timestamp">
+                        ${timeStr}
+                        <span class="test-log-source" style="background-color: ${sourceColor};">
+                            ${this.escapeHtml(log.source_id)}
+                        </span>
+                    </div>
+                    <div class="test-log-text">${this.escapeHtml(log.raw_text)}</div>
+                    <div class="test-log-status ${statusTextClass}">${statusText}</div>
+                </div>
+            `;
+        });
+        expectedLogsHtml += '</div></div>';
+
+        // Build best match fiber section
+        let bestMatchHtml = '';
+        if (bestMatch) {
+            bestMatchHtml = '<div class="test-result-section"><h3>Best Match Fiber Logs (' + bestMatch.logs.length + ')</h3><div class="test-logs-list">';
+            bestMatch.logs.forEach(log => {
+                const expectedLogIds = result.expected_logs.map(l => l.id);
+                const inExpected = expectedLogIds.includes(log.id);
+                const statusClass = inExpected ? 'match-success' : 'match-extra';
+                const statusText = inExpected ? '✓ Match' : '+ Extra';
+                const statusTextClass = inExpected ? 'success' : 'extra';
+
+                const timestamp = new Date(log.timestamp);
+                const timeStr = this.formatTimestamp(timestamp);
+                const sourceColor = colorManager.getFiberTypeColor(log.source_id);
+
+                bestMatchHtml += `
+                    <div class="test-log-item ${statusClass}">
+                        <div class="test-log-timestamp">
+                            ${timeStr}
+                            <span class="test-log-source" style="background-color: ${sourceColor};">
+                                ${this.escapeHtml(log.source_id)}
+                            </span>
+                        </div>
+                        <div class="test-log-text">${this.escapeHtml(log.raw_text)}</div>
+                        <div class="test-log-status ${statusTextClass}">${statusText}</div>
+                    </div>
+                `;
+            });
+            bestMatchHtml += '</div></div>';
+        }
+
+        // Build all fibers section
+        let allFibersHtml = '<div class="test-result-section"><h3>All Generated Fibers (' + result.fibers_generated.length + ')</h3><div class="test-fibers-list">';
+        result.fibers_generated.forEach((fiber, index) => {
+            const isBest = index === result.best_match_index;
+            const bestLabel = isBest ? ' - BEST' : '';
+            const bestClass = isBest ? 'best-match' : '';
+
+            allFibersHtml += `
+                <div class="test-fiber-item ${bestClass}">
+                    <div>
+                        <span class="test-fiber-id">Fiber ${fiber.fiber_id.substring(0, 8)}...</span>
+                        <span class="test-fiber-iou">IoU: ${fiber.iou.toFixed(2)}${bestLabel}</span>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">
+                        ${fiber.logs.length} logs (${fiber.matching_logs.length} match, ${fiber.missing_logs.length} missing, ${fiber.extra_log_ids.length} extra)
+                    </div>
+                </div>
+            `;
+        });
+        allFibersHtml += '</div></div>';
+
+        // Build actions
+        const actionsHtml = `
+            <div class="test-modal-actions">
+                <button id="test-modal-close" class="btn btn-secondary">Close</button>
+            </div>
+        `;
+
+        // Combine all sections
+        content.innerHTML = statusHtml + expectedLogsHtml + bestMatchHtml + allFibersHtml + actionsHtml;
+
+        // Show modal
+        modal.style.display = 'flex';
+
+        // Add event listeners
+        const closeBtn = document.getElementById('test-modal-close');
+        const closeX = document.getElementById('close-test-results-modal');
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                modal.style.display = 'none';
+            });
+        }
+
+        if (closeX) {
+            closeX.addEventListener('click', () => {
+                modal.style.display = 'none';
+            });
+        }
+
+        // Close on outside click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+
+        // Close on ESC key
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                modal.style.display = 'none';
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    formatTimestamp(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        const ms = String(date.getMilliseconds()).padStart(3, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
     }
 }
 

@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -219,6 +220,41 @@ pub struct CreateFiberTypeResponse {
 #[derive(Debug, Serialize)]
 pub struct SuccessResponse {
     pub message: String,
+}
+
+// ============================================================================
+// Working Set Testing Types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TestWorkingSetRequest {
+    pub log_ids: Vec<Uuid>,
+    pub yaml_content: String,
+    pub include_margin: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestWorkingSetResponse {
+    pub expected_logs: Vec<LogDto>,
+    pub time_window: TimeWindowDto,
+    pub fibers_generated: Vec<FiberMatchResult>,
+    pub best_match_index: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FiberMatchResult {
+    pub fiber_id: Uuid,
+    pub iou: f64,
+    pub matching_logs: Vec<Uuid>,
+    pub missing_logs: Vec<Uuid>,
+    pub extra_log_ids: Vec<Uuid>,
+    pub logs: Vec<LogDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TimeWindowDto {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
 }
 
 // ============================================================================
@@ -781,22 +817,29 @@ pub async fn update_fiber_type(
     config.fiber_types.insert(new_name.clone(), new_fiber_type);
 
     // 8. Write new config version to database (DB-only, no file write)
-    let parent_hash = state
-        .storage
-        .get_active_config_version()
-        .await?
-        .map(|v| v.version_hash);
+    // Check if this version already exists (same YAML hash)
+    if state.storage.get_config_version(&new_hash).await?.is_some() {
+        // Version already exists - just update its timestamp
+        state.storage.touch_config_version(&new_hash).await?;
+    } else {
+        // New version - insert it
+        let parent_hash = state
+            .storage
+            .get_active_config_version()
+            .await?
+            .map(|v| v.version_hash);
 
-    let config_version = ConfigVersion {
-        version_hash: new_hash.clone(),
-        parent_hash,
-        yaml_content: updated_yaml,
-        created_at: Utc::now(),
-        source: ConfigSource::UI,
-        is_active: false, // Not active until hot-reload
-    };
+        let config_version = ConfigVersion {
+            version_hash: new_hash.clone(),
+            parent_hash,
+            yaml_content: updated_yaml,
+            created_at: Utc::now(),
+            source: ConfigSource::UI,
+            is_active: false, // Not active until hot-reload
+        };
 
-    state.storage.insert_config_version(&config_version).await?;
+        state.storage.insert_config_version(&config_version).await?;
+    }
 
     Ok(Json(UpdateFiberTypeResponse {
         new_version_hash: new_hash,
@@ -842,26 +885,26 @@ pub async fn hot_reload_fiber_type(
         }
     }
 
-    // 4. Get the current config YAML from the active database version
-    // CRITICAL: We must use the stored YAML string, NOT re-serialize the config struct,
-    // because re-serialization loses comments and formatting, producing a different hash.
+    // 4. Get the current in-memory config YAML (which contains any UI changes made since startup)
+    // CRITICAL: We must use the in-memory YAML string that was updated by update_fiber_type,
+    // NOT fetch from the database, because the database still has the old active version.
+    // The in-memory YAML is the source of truth for pending changes.
     // See specs/CONFIG_SYSTEM.md for details on the YAML-as-ground-truth paradigm.
-    let active_version = state
-        .storage
-        .get_active_config_version()
-        .await?
-        .ok_or_else(|| ApiError::Internal("No active config version found".to_string()))?;
+    let yaml = {
+        let config_yaml_guard = state.config_yaml.read().await;
+        config_yaml_guard.clone()
+    };
 
-    let yaml = active_version.yaml_content.clone();
-
-    // Update in-memory YAML to match database (in case it was stale from startup)
-    {
-        let mut config_yaml_guard = state.config_yaml.write().await;
-        *config_yaml_guard = yaml.clone();
-    }
-
-    // Compute hash from the stored YAML (should match the active version hash)
+    // Compute hash from the in-memory YAML
     let new_hash = compute_config_hash(&yaml);
+
+    // Verify this version exists in the database (it should, because update_fiber_type saved it)
+    if state.storage.get_config_version(&new_hash).await?.is_none() {
+        return Err(ApiError::Internal(format!(
+            "Config version {} not found in database. Save changes before hot reloading.",
+            &new_hash[..8]
+        )));
+    }
     let new_version = new_hash
         .parse::<u64>()
         .unwrap_or_else(|_| yaml.as_bytes().iter().map(|&b| b as u64).sum());
@@ -926,22 +969,29 @@ pub async fn delete_fiber_type(
     config.fiber_types.remove(&name);
 
     // 7. Write new config version to database (DB-only, no file write)
-    let parent_hash = state
-        .storage
-        .get_active_config_version()
-        .await?
-        .map(|v| v.version_hash);
+    // Check if this version already exists (same YAML hash)
+    if state.storage.get_config_version(&new_hash).await?.is_some() {
+        // Version already exists - just update its timestamp
+        state.storage.touch_config_version(&new_hash).await?;
+    } else {
+        // New version - insert it
+        let parent_hash = state
+            .storage
+            .get_active_config_version()
+            .await?
+            .map(|v| v.version_hash);
 
-    let config_version = ConfigVersion {
-        version_hash: new_hash.clone(),
-        parent_hash,
-        yaml_content: updated_yaml,
-        created_at: Utc::now(),
-        source: ConfigSource::UI,
-        is_active: false,
-    };
+        let config_version = ConfigVersion {
+            version_hash: new_hash.clone(),
+            parent_hash,
+            yaml_content: updated_yaml,
+            created_at: Utc::now(),
+            source: ConfigSource::UI,
+            is_active: false,
+        };
 
-    state.storage.insert_config_version(&config_version).await?;
+        state.storage.insert_config_version(&config_version).await?;
+    }
 
     Ok(Json(SuccessResponse {
         message: format!("Fiber type '{}' deleted (hot-reload required)", name),
@@ -995,22 +1045,29 @@ pub async fn create_fiber_type(
     config.fiber_types.insert(req.name.clone(), new_fiber_type);
 
     // 8. Write new config version to database (DB-only, no file write)
-    let parent_hash = state
-        .storage
-        .get_active_config_version()
-        .await?
-        .map(|v| v.version_hash);
+    // Check if this version already exists (same YAML hash)
+    if state.storage.get_config_version(&new_hash).await?.is_some() {
+        // Version already exists - just update its timestamp
+        state.storage.touch_config_version(&new_hash).await?;
+    } else {
+        // New version - insert it
+        let parent_hash = state
+            .storage
+            .get_active_config_version()
+            .await?
+            .map(|v| v.version_hash);
 
-    let config_version = ConfigVersion {
-        version_hash: new_hash.clone(),
-        parent_hash,
-        yaml_content: updated_yaml,
-        created_at: Utc::now(),
-        source: ConfigSource::UI,
-        is_active: false,
-    };
+        let config_version = ConfigVersion {
+            version_hash: new_hash.clone(),
+            parent_hash,
+            yaml_content: updated_yaml,
+            created_at: Utc::now(),
+            source: ConfigSource::UI,
+            is_active: false,
+        };
 
-    state.storage.insert_config_version(&config_version).await?;
+        state.storage.insert_config_version(&config_version).await?;
+    }
 
     Ok(Json(CreateFiberTypeResponse {
         name: req.name,
@@ -1139,6 +1196,210 @@ pub async fn cancel_reprocessing(
         }
     } else {
         Err(ApiError::NotFound("No reprocessing found".to_string()))
+    }
+}
+
+// ============================================================================
+// Working Set Testing API
+// ============================================================================
+
+/// POST /api/fiber-types/:name/test-working-set
+pub async fn test_working_set(
+    State(state): State<AppState>,
+    Path(fiber_type_name): Path<String>,
+    Json(request): Json<TestWorkingSetRequest>,
+) -> Result<Json<TestWorkingSetResponse>, ApiError> {
+    use crate::config::types::Config;
+    use crate::fiber::processor::FiberProcessor;
+    use crate::source::reader::LogRecord;
+    use std::collections::{HashMap, HashSet};
+
+    // 1. Validate that we have log IDs
+    if request.log_ids.is_empty() {
+        return Err(ApiError::BadRequest("log_ids cannot be empty".to_string()));
+    }
+
+    // 2. Query logs by IDs
+    let mut expected_logs = Vec::new();
+    for log_id in &request.log_ids {
+        let log = state
+            .storage
+            .get_log(*log_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Log not found: {}", log_id)))?;
+        expected_logs.push(log);
+    }
+
+    // 3. Calculate time window: [min(timestamps) - max_gap, max(timestamps) + max_gap]
+    let min_timestamp = expected_logs
+        .iter()
+        .map(|l| l.timestamp)
+        .min()
+        .ok_or_else(|| ApiError::Internal("No logs found".to_string()))?;
+    let max_timestamp = expected_logs
+        .iter()
+        .map(|l| l.timestamp)
+        .max()
+        .ok_or_else(|| ApiError::Internal("No logs found".to_string()))?;
+
+    // 4. Parse fiber type config from yaml_content
+    // The YAML should be in the format "fiber_name:\n  description: ..."
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&request.yaml_content)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid YAML: {}", e)))?;
+
+    let yaml_map = yaml_value.as_mapping()
+        .ok_or_else(|| ApiError::BadRequest("YAML must be a mapping with one fiber type".to_string()))?;
+
+    if yaml_map.len() != 1 {
+        return Err(ApiError::BadRequest(
+            "YAML must contain exactly one fiber type definition".to_string()
+        ));
+    }
+
+    let (yaml_name, fiber_config_value) = yaml_map.iter().next().unwrap();
+    let yaml_fiber_name = yaml_name.as_str()
+        .ok_or_else(|| ApiError::BadRequest("Fiber type name must be a string".to_string()))?;
+
+    // Validate that the fiber type name in YAML matches the path parameter
+    if yaml_fiber_name != fiber_type_name {
+        return Err(ApiError::BadRequest(format!(
+            "Fiber type name in YAML ('{}') does not match path parameter ('{}')",
+            yaml_fiber_name, fiber_type_name
+        )));
+    }
+
+    let fiber_type_config: crate::config::types::FiberTypeConfig = serde_yaml::from_value(fiber_config_value.clone())
+        .map_err(|e| ApiError::BadRequest(format!("Invalid fiber type config: {}", e)))?;
+
+    // Determine the margin (max_gap) for the time window
+    let margin = if request.include_margin.unwrap_or(true) {
+        fiber_type_config.temporal.max_gap
+            .map(|d| chrono::Duration::from_std(d).unwrap_or_else(|_| chrono::Duration::seconds(60)))
+            .unwrap_or_else(|| chrono::Duration::hours(1)) // Default 1 hour for infinite
+    } else {
+        chrono::Duration::seconds(0)
+    };
+
+    let time_window_start = min_timestamp - margin;
+    let time_window_end = max_timestamp + margin;
+
+    // 5. Create temporary Config with ONLY this fiber type
+    let mut temp_fiber_types = HashMap::new();
+    temp_fiber_types.insert(fiber_type_name.clone(), fiber_type_config);
+
+    let temp_config = Config {
+        sources: HashMap::new(), // Not needed for test processing
+        fiber_types: temp_fiber_types,
+        auto_source_fibers: false,
+        pipeline: state.config.read().await.pipeline.clone(),
+        sequencer: state.config.read().await.sequencer.clone(),
+        storage: state.config.read().await.storage.clone(),
+        web: state.config.read().await.web.clone(),
+    };
+
+    // 6. Create temporary FiberProcessor
+    let temp_version = 999999u64; // Temporary version number
+    let mut temp_processor = FiberProcessor::from_config(&temp_config, temp_version)
+        .map_err(|e| ApiError::Internal(format!("Failed to create temporary processor: {}", e)))?;
+
+    // 7. Query all logs in time window (limit to reasonable amount, e.g., 10,000)
+    let window_logs = state
+        .storage
+        .query_logs_by_time(time_window_start, time_window_end, 10000, 0)
+        .await?;
+
+    // 8. Convert StoredLog to LogRecord and process through temporary processor
+    let mut fiber_memberships: HashMap<Uuid, Vec<Uuid>> = HashMap::new(); // fiber_id -> [log_ids]
+
+    for stored_log in &window_logs {
+        let log_record = LogRecord {
+            id: stored_log.log_id,
+            timestamp: stored_log.timestamp,
+            source_id: stored_log.source_id.clone(),
+            raw_text: stored_log.raw_text.clone(),
+            file_offset: 0, // Not needed for testing
+        };
+
+        let results = temp_processor.process_log(&log_record);
+
+        // Collect memberships
+        for result in results {
+            for membership in result.memberships {
+                fiber_memberships
+                    .entry(membership.fiber_id)
+                    .or_insert_with(Vec::new)
+                    .push(membership.log_id);
+            }
+        }
+    }
+
+    // 9. Compute IoU for each generated fiber against expected log_ids
+    let expected_log_set: HashSet<Uuid> = request.log_ids.iter().copied().collect();
+
+    let mut fiber_results = Vec::new();
+
+    for (fiber_id, fiber_log_ids) in fiber_memberships {
+        let fiber_log_set: HashSet<Uuid> = fiber_log_ids.iter().copied().collect();
+
+        let iou = calculate_iou(&expected_log_set, &fiber_log_set);
+
+        let matching_logs: Vec<Uuid> = expected_log_set.intersection(&fiber_log_set).copied().collect();
+        let missing_logs: Vec<Uuid> = expected_log_set.difference(&fiber_log_set).copied().collect();
+        let extra_log_ids: Vec<Uuid> = fiber_log_set.difference(&expected_log_set).copied().collect();
+
+        // Fetch full log objects for this fiber
+        let mut fiber_logs = Vec::new();
+        for log_id in &fiber_log_ids {
+            if let Some(stored_log) = window_logs.iter().find(|l| l.log_id == *log_id) {
+                fiber_logs.push(LogDto::from(stored_log.clone()));
+            }
+        }
+
+        fiber_results.push(FiberMatchResult {
+            fiber_id,
+            iou,
+            matching_logs,
+            missing_logs,
+            extra_log_ids,
+            logs: fiber_logs,
+        });
+    }
+
+    // 10. Sort results by IoU descending
+    fiber_results.sort_by(|a, b| b.iou.partial_cmp(&a.iou).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find best match (highest IoU) after sorting
+    let best_match_index = if fiber_results.is_empty() {
+        None
+    } else {
+        Some(0) // First element after sorting has highest IoU
+    };
+
+    // Convert expected_logs to DTOs
+    let expected_logs_dto = expected_logs
+        .into_iter()
+        .map(LogDto::from)
+        .collect();
+
+    Ok(Json(TestWorkingSetResponse {
+        expected_logs: expected_logs_dto,
+        time_window: TimeWindowDto {
+            start: time_window_start,
+            end: time_window_end,
+        },
+        fibers_generated: fiber_results,
+        best_match_index,
+    }))
+}
+
+/// Calculate Intersection over Union (IoU) for two sets
+fn calculate_iou(expected: &HashSet<Uuid>, actual: &HashSet<Uuid>) -> f64 {
+    let intersection = expected.intersection(actual).count();
+    let union = expected.union(actual).count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
     }
 }
 

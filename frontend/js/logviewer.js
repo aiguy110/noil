@@ -244,6 +244,11 @@ class LogViewer {
         if (loadMoreBtn) {
             loadMoreBtn.style.display = this.hasMore ? 'inline-block' : 'none';
         }
+
+        // Update working set indicators
+        if (window.app && window.app.updateWorkingSetIndicators) {
+            window.app.updateWorkingSetIndicators();
+        }
     }
 
     createLogLine(log) {

@@ -2,9 +2,10 @@
  * Timeline visualization for fibers
  */
 class Timeline {
-    constructor(containerEl, onFiberSelect) {
+    constructor(containerEl, onFiberSelect, onFiberContextMenu) {
         this.container = containerEl;
         this.onFiberSelect = onFiberSelect;
+        this.onFiberContextMenu = onFiberContextMenu || null;
         this.fibers = [];
         this.fiberTypeMetadata = [];
         this.selectedFiberId = null;
@@ -323,6 +324,14 @@ class Timeline {
             line.addEventListener('click', () => {
                 this.selectFiber(fiber.id);
             });
+
+            // Add right-click context menu
+            if (this.onFiberContextMenu) {
+                line.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    this.onFiberContextMenu(e, fiber.id);
+                });
+            }
 
             this.container.appendChild(line);
         });

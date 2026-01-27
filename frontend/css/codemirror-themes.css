@@ -1,0 +1,308 @@
+/*
+ * CodeMirror Theme Options for Noil
+ *
+ * The default theme is DRACULA (defined in style.css).
+ * To use a different theme, uncomment the theme you want below.
+ *
+ * To activate a theme from this file:
+ * 1. Uncomment the theme block below
+ * 2. Add this line to index.html <head> section:
+ *    <link rel="stylesheet" href="css/codemirror-themes.css">
+ * 3. Refresh your browser
+ */
+
+/* ===================================================================
+   THEME 1: VS Code Dark (Original default)
+   =================================================================== */
+/*
+.cm-editor {
+    background-color: #2d2d30 !important;
+    color: #cccccc !important;
+    border-color: #3e3e42 !important;
+}
+
+.cm-editor.cm-focused {
+    border-color: #007acc !important;
+}
+
+.cm-content {
+    color: #cccccc !important;
+}
+
+.cm-gutters {
+    background-color: #252526 !important;
+    border-right: 1px solid #3e3e42 !important;
+    color: #858585 !important;
+}
+
+.cm-activeLineGutter {
+    background-color: #2d2d30 !important;
+}
+
+.cm-activeLine {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.cm-selectionBackground {
+    background-color: #007acc !important;
+    opacity: 0.3;
+}
+
+.cm-cursor {
+    border-left-color: #cccccc !important;
+}
+
+.cm-atom,
+.cm-string {
+    color: #ce9178 !important;
+}
+
+.cm-number {
+    color: #b5cea8 !important;
+}
+
+.cm-keyword {
+    color: #569cd6 !important;
+}
+
+.cm-variable,
+.cm-property {
+    color: #9cdcfe !important;
+}
+
+.cm-comment {
+    color: #6a9955 !important;
+    font-style: italic;
+}
+
+.cm-meta {
+    color: #dcdcaa !important;
+}
+
+.cm-lineNumbers .cm-gutterElement {
+    color: #858585 !important;
+}
+*/
+
+/* ===================================================================
+   THEME 2: High Contrast Dark (Better visibility)
+   =================================================================== */
+/*
+.cm-editor {
+    background-color: #0d1117 !important;
+}
+
+.cm-content {
+    color: #f0f6fc !important;
+}
+
+.cm-gutters {
+    background-color: #010409 !important;
+    color: #7d8590 !important;
+}
+
+.cm-atom,
+.cm-string {
+    color: #ff9e64 !important; /* Bright orange for strings */
+/*}
+
+.cm-number {
+    color: #73daca !important; /* Bright cyan for numbers */
+/*}
+
+.cm-keyword {
+    color: #7aa2f7 !important; /* Bright blue for keywords */
+/*}
+
+.cm-variable,
+.cm-property {
+    color: #7dcfff !important; /* Bright cyan-blue */
+/*}
+
+.cm-comment {
+    color: #9ece6a !important; /* Bright green */
+/*    font-style: italic;
+}
+
+.cm-meta {
+    color: #e0af68 !important; /* Yellow */
+/*}
+*/
+
+/* ===================================================================
+   THEME 3: Light Theme (for bright environments)
+   =================================================================== */
+/*
+.cm-editor {
+    background-color: #ffffff !important;
+    color: #24292f !important;
+}
+
+.cm-content {
+    color: #24292f !important;
+}
+
+.cm-gutters {
+    background-color: #f6f8fa !important;
+    border-right: 1px solid #d0d7de !important;
+    color: #57606a !important;
+}
+
+.cm-activeLine {
+    background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.cm-atom,
+.cm-string {
+    color: #0a3069 !important; /* Dark blue for strings */
+/*}
+
+.cm-number {
+    color: #0550ae !important; /* Blue for numbers */
+/*}
+
+.cm-keyword {
+    color: #cf222e !important; /* Red for keywords */
+/*}
+
+.cm-variable,
+.cm-property {
+    color: #953800 !important; /* Brown */
+/*}
+
+.cm-comment {
+    color: #6e7781 !important; /* Gray */
+/*    font-style: italic;
+}
+
+.cm-meta {
+    color: #8250df !important; /* Purple */
+/*}
+
+.cm-cursor {
+    border-left-color: #24292f !important;
+}
+*/
+
+/* ===================================================================
+   THEME 4: Monokai-inspired
+   =================================================================== */
+/*
+.cm-editor {
+    background-color: #272822 !important;
+}
+
+.cm-content {
+    color: #f8f8f2 !important;
+}
+
+.cm-gutters {
+    background-color: #1e1f1c !important;
+    color: #75715e !important;
+}
+
+.cm-atom,
+.cm-string {
+    color: #e6db74 !important; /* Yellow */
+/*}
+
+.cm-number {
+    color: #ae81ff !important; /* Purple */
+/*}
+
+.cm-keyword {
+    color: #f92672 !important; /* Pink */
+/*}
+
+.cm-variable,
+.cm-property {
+    color: #a6e22e !important; /* Green */
+/*}
+
+.cm-comment {
+    color: #75715e !important; /* Gray */
+/*    font-style: italic;
+}
+
+.cm-meta {
+    color: #66d9ef !important; /* Cyan */
+/*}
+*/
+
+/* ===================================================================
+   THEME 5: Solarized Dark
+   =================================================================== */
+/*
+.cm-editor {
+    background-color: #002b36 !important;
+}
+
+.cm-content {
+    color: #839496 !important;
+}
+
+.cm-gutters {
+    background-color: #073642 !important;
+    color: #586e75 !important;
+}
+
+.cm-atom,
+.cm-string {
+    color: #2aa198 !important; /* Cyan */
+/*}
+
+.cm-number {
+    color: #d33682 !important; /* Magenta */
+/*}
+
+.cm-keyword {
+    color: #859900 !important; /* Green */
+/*}
+
+.cm-variable,
+.cm-property {
+    color: #268bd2 !important; /* Blue */
+/*}
+
+.cm-comment {
+    color: #586e75 !important; /* Gray */
+/*    font-style: italic;
+}
+
+.cm-meta {
+    color: #cb4b16 !important; /* Orange */
+/*}
+*/
+
+/* ===================================================================
+   CUSTOM ADJUSTMENTS
+   =================================================================== */
+
+/* Increase font size for better readability */
+/*
+.cm-editor {
+    font-size: 14px !important;
+}
+*/
+
+/* Adjust line height */
+/*
+.cm-editor {
+    line-height: 1.8 !important;
+}
+*/
+
+/* Add more padding to content */
+/*
+.cm-content {
+    padding: 10px 5px !important;
+}
+*/
+
+/* Brighter cursor */
+/*
+.cm-cursor {
+    border-left-color: #00ff00 !important;
+    border-left-width: 2px !important;
+}
+*/

@@ -1338,6 +1338,33 @@ impl Storage for DuckDbStorage {
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
     }
+
+    async fn touch_config_version(&self, version_hash: &str) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let version_hash = version_hash.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            let now_micros = Utc::now().timestamp_micros();
+
+            let rows_affected = conn.execute(
+                "UPDATE config_versions SET created_at = to_timestamp(? / 1000000.0) WHERE version_hash = ?",
+                duckdb::params![now_micros, version_hash],
+            )?;
+
+            if rows_affected == 0 {
+                return Err(StorageError::NotFound(format!(
+                    "Config version not found: {}",
+                    version_hash
+                )));
+            }
+
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
 }
 
 // Helper function to parse a row into StoredLog

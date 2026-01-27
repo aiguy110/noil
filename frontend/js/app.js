@@ -22,7 +22,14 @@ class NoilApp {
         this.selectedLogTimestamp = null; // Timestamp of selected log line
         this.selectedLogSourceId = null; // Source ID of selected log line
         this.logFibersCache = {};       // Map: logId -> fiber list
-        this.fiberProcessingEditor = null; // Fiber processing editor instance
+        this.fiberProcessingEditorPage = null; // Fiber processing editor instance for full page
+
+        // Page state
+        this.currentPage = 'log-view';
+
+        // Working Set state (global, persists across fiber types)
+        this.workingSet = this.loadWorkingSetFromStorage();
+        this.contextMenu = null; // Will be initialized in init()
 
         this.init();
     }
@@ -40,6 +47,10 @@ class NoilApp {
         this.initModalColorConfig();
         this.initFilters();
         this.initNavigationTab();
+        this.initFiberRulesPage();
+        this.initContextMenu();
+        this.initFiberContextMenu();
+        this.initWorkingSetIndicators();
 
         // Load initial data
         await this.loadData();
@@ -61,11 +72,40 @@ class NoilApp {
 
     initHamburgerMenu() {
         const hamburgerBtn = document.getElementById('hamburger-menu');
+        const dropdown = document.getElementById('hamburger-dropdown');
 
-        // Clicking hamburger directly opens settings
-        hamburgerBtn.addEventListener('click', () => {
-            this.openSettingsModal();
+        // Toggle dropdown on hamburger click
+        hamburgerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            dropdown.classList.toggle('open');
         });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && !hamburgerBtn.contains(e.target)) {
+                dropdown.classList.remove('open');
+            }
+        });
+
+        // Handle menu item clicks
+        const menuItems = dropdown.querySelectorAll('.hamburger-menu-item');
+        menuItems.forEach(item => {
+            item.addEventListener('click', () => {
+                const page = item.dataset.page;
+                const action = item.dataset.action;
+
+                if (page) {
+                    this.switchPage(page);
+                } else if (action === 'settings') {
+                    this.openSettingsModal();
+                }
+
+                dropdown.classList.remove('open');
+            });
+        });
+
+        // Set initial active state
+        this.updateHamburgerMenuActiveState();
     }
 
     initSettingsModal() {
@@ -104,12 +144,6 @@ class NoilApp {
                         content.classList.remove('active');
                     }
                 });
-
-                // Initialize fiber processing editor on first open
-                if (tabName === 'fiber-processing' && !this.fiberProcessingEditor) {
-                    this.fiberProcessingEditor = new FiberProcessingEditor(api);
-                    await this.fiberProcessingEditor.init();
-                }
             });
         });
     }
@@ -184,9 +218,15 @@ class NoilApp {
 
     initTimeline() {
         const container = document.getElementById('timeline-canvas');
-        this.timeline = new Timeline(container, (fiberId) => {
-            this.onFiberSelected(fiberId);
-        });
+        this.timeline = new Timeline(
+            container,
+            (fiberId) => {
+                this.onFiberSelected(fiberId);
+            },
+            (event, fiberId) => {
+                this.showFiberContextMenu(event, fiberId);
+            }
+        );
 
         // Refresh button - reset timeline view
         document.getElementById('refresh').addEventListener('click', () => {
@@ -642,6 +682,12 @@ class NoilApp {
                 this.updateNavigationUI();
             });
 
+            // Add right-click context menu
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                this.showFiberContextMenu(e, entry.fiberId);
+            });
+
             container.appendChild(item);
         });
     }
@@ -695,6 +741,12 @@ class NoilApp {
                 if (this.selectedLogId && this.logFibersCache[this.selectedLogId]) {
                     this.updateOtherFibersList(this.logFibersCache[this.selectedLogId]);
                 }
+            });
+
+            // Add right-click context menu
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                this.showFiberContextMenu(e, fiber.id);
             });
 
             container.appendChild(item);
@@ -1042,9 +1094,453 @@ class NoilApp {
         }
     }
 
+    async initFiberRulesPage() {
+        // Initialize fiber processing editor for the full page
+        // We'll initialize it lazily when the page is first opened
+    }
+
+    updateHamburgerMenuActiveState() {
+        document.querySelectorAll('.hamburger-menu-item').forEach(item => {
+            if (item.dataset.page === this.currentPage) {
+                item.classList.add('active');
+            } else {
+                item.classList.remove('active');
+            }
+        });
+    }
+
+    async switchPage(pageName) {
+        // Hide all pages
+        document.querySelectorAll('.page').forEach(page => {
+            page.classList.remove('active');
+        });
+
+        // Show the selected page
+        const pageEl = document.getElementById(`${pageName}-page`);
+        if (pageEl) {
+            pageEl.classList.add('active');
+            this.currentPage = pageName;
+
+            // Update active menu item
+            this.updateHamburgerMenuActiveState();
+
+            // Initialize fiber processing editor on first open
+            if (pageName === 'fiber-rules' && !this.fiberProcessingEditorPage) {
+                this.fiberProcessingEditorPage = new FiberProcessingEditor(api, {
+                    typeListEl: 'fiber-type-list-page',
+                    typeNameEl: 'fiber-type-name-page',
+                    editorEl: 'fiber-yaml-editor-page',
+                    saveBtnEl: 'fiber-save-page',
+                    hotReloadBtnEl: 'fiber-hot-reload-page',
+                    deleteBtnEl: 'fiber-delete-page',
+                    newBtnEl: 'new-fiber-type-page',
+                    statusEl: 'fiber-status-page',
+                    reprocessBtnEl: 'start-reprocess-page',
+                    reprocessProgressEl: 'reprocess-progress-page',
+                    reprocessProgressBarEl: 'reprocess-progress-bar-page',
+                    reprocessStatusTextEl: 'reprocess-status-text-page',
+                    reprocessProgressTextEl: 'reprocess-progress-text-page',
+                    cancelReprocessBtnEl: 'cancel-reprocess-page',
+                });
+                await this.fiberProcessingEditorPage.init();
+            }
+        }
+    }
+
     showLoading(show) {
         const overlay = document.getElementById('loading-overlay');
         overlay.style.display = show ? 'flex' : 'none';
+    }
+
+    // =========================================================================
+    // Working Set Management
+    // =========================================================================
+
+    loadWorkingSetFromStorage() {
+        try {
+            const stored = localStorage.getItem('noil_working_set');
+            if (!stored) {
+                return { logIds: [], logs: {}, timestamp: new Date().toISOString() };
+            }
+
+            const data = JSON.parse(stored);
+            return {
+                logIds: data.logIds || [],
+                logs: {}, // Will be lazy-loaded when needed
+                timestamp: data.timestamp || new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('Failed to load working set from localStorage:', error);
+            return { logIds: [], logs: {}, timestamp: new Date().toISOString() };
+        }
+    }
+
+    saveWorkingSetToStorage() {
+        try {
+            const data = {
+                logIds: this.workingSet.logIds,
+                timestamp: new Date().toISOString()
+            };
+            localStorage.setItem('noil_working_set', JSON.stringify(data));
+        } catch (error) {
+            console.error('Failed to save working set to localStorage:', error);
+            if (error.name === 'QuotaExceededError') {
+                alert('Warning: Browser storage is full. Working set will only be stored in memory for this session.');
+            }
+        }
+    }
+
+    async addToWorkingSet(logId) {
+        if (this.workingSet.logIds.includes(logId)) {
+            return; // Already in working set
+        }
+
+        this.workingSet.logIds.push(logId);
+
+        // Fetch log details if not already cached
+        if (!this.workingSet.logs[logId]) {
+            try {
+                const log = this.logViewer.logs.find(l => l.id === logId);
+                if (log) {
+                    this.workingSet.logs[logId] = log;
+                }
+            } catch (error) {
+                console.error('Failed to fetch log details:', error);
+            }
+        }
+
+        this.saveWorkingSetToStorage();
+        this.updateWorkingSetIndicators();
+    }
+
+    removeFromWorkingSet(logId) {
+        const index = this.workingSet.logIds.indexOf(logId);
+        if (index !== -1) {
+            this.workingSet.logIds.splice(index, 1);
+            delete this.workingSet.logs[logId];
+            this.saveWorkingSetToStorage();
+            this.updateWorkingSetIndicators();
+        }
+    }
+
+    clearWorkingSet() {
+        this.workingSet.logIds = [];
+        this.workingSet.logs = {};
+        this.saveWorkingSetToStorage();
+        this.updateWorkingSetIndicators();
+    }
+
+    getWorkingSet() {
+        return this.workingSet;
+    }
+
+    isInWorkingSet(logId) {
+        return this.workingSet.logIds.includes(logId);
+    }
+
+    async addFiberToWorkingSet(fiberId) {
+        try {
+            // Fetch all logs for this fiber
+            const response = await api.getFiberLogs(fiberId, { limit: 10000 });
+            const logs = response.logs || [];
+
+            // Add each log to working set
+            for (const log of logs) {
+                if (!this.workingSet.logIds.includes(log.id)) {
+                    this.workingSet.logIds.push(log.id);
+                    this.workingSet.logs[log.id] = log;
+                }
+            }
+
+            this.saveWorkingSetToStorage();
+            this.updateWorkingSetIndicators();
+
+            return logs.length;
+        } catch (error) {
+            console.error('Failed to add fiber to working set:', error);
+            throw error;
+        }
+    }
+
+    async removeFiberFromWorkingSet(fiberId) {
+        try {
+            // Fetch all logs for this fiber
+            const response = await api.getFiberLogs(fiberId, { limit: 10000 });
+            const logs = response.logs || [];
+
+            // Remove each log from working set
+            for (const log of logs) {
+                const index = this.workingSet.logIds.indexOf(log.id);
+                if (index !== -1) {
+                    this.workingSet.logIds.splice(index, 1);
+                    delete this.workingSet.logs[log.id];
+                }
+            }
+
+            this.saveWorkingSetToStorage();
+            this.updateWorkingSetIndicators();
+
+            return logs.length;
+        } catch (error) {
+            console.error('Failed to remove fiber from working set:', error);
+            throw error;
+        }
+    }
+
+    async isFiberInWorkingSet(fiberId) {
+        try {
+            // Fetch all logs for this fiber
+            const response = await api.getFiberLogs(fiberId, { limit: 10000 });
+            const logs = response.logs || [];
+
+            if (logs.length === 0) return false;
+
+            // Check if all logs are in working set
+            return logs.every(log => this.workingSet.logIds.includes(log.id));
+        } catch (error) {
+            console.error('Failed to check fiber in working set:', error);
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // Context Menu
+    // =========================================================================
+
+    initContextMenu() {
+        // Create context menu element
+        const menu = document.createElement('div');
+        menu.id = 'context-menu';
+        menu.className = 'context-menu';
+        menu.style.display = 'none';
+        menu.innerHTML = `
+            <button class="context-menu-item" data-action="add">Add to Working Set</button>
+            <button class="context-menu-item" data-action="remove">Remove from Working Set</button>
+            <div class="context-menu-separator"></div>
+            <button class="context-menu-item" data-action="copy-id">Copy Log ID</button>
+            <button class="context-menu-item" data-action="copy-timestamp">Copy Timestamp</button>
+        `;
+        document.body.appendChild(menu);
+        this.contextMenu = menu;
+
+        // Add right-click event listener to log content
+        document.getElementById('log-content').addEventListener('contextmenu', (e) => {
+            const logLine = e.target.closest('.log-line');
+            if (logLine) {
+                e.preventDefault();
+                this.showContextMenu(e, logLine);
+            }
+        });
+
+        // Close context menu when clicking outside
+        document.addEventListener('click', () => {
+            this.hideContextMenu();
+        });
+
+        // Handle context menu item clicks
+        menu.addEventListener('click', (e) => {
+            const item = e.target.closest('.context-menu-item');
+            if (!item) return;
+
+            const action = item.getAttribute('data-action');
+            const logId = menu.getAttribute('data-log-id');
+
+            switch (action) {
+                case 'add':
+                    this.addToWorkingSet(logId);
+                    break;
+                case 'remove':
+                    this.removeFromWorkingSet(logId);
+                    break;
+                case 'copy-id':
+                    navigator.clipboard.writeText(logId);
+                    break;
+                case 'copy-timestamp':
+                    const log = this.logViewer.logs.find(l => l.id === logId);
+                    if (log) {
+                        navigator.clipboard.writeText(log.timestamp);
+                    }
+                    break;
+            }
+
+            this.hideContextMenu();
+        });
+    }
+
+    showContextMenu(event, logLine) {
+        const logId = logLine.getAttribute('data-log-id');
+        if (!logId) return;
+
+        const menu = this.contextMenu;
+        menu.setAttribute('data-log-id', logId);
+
+        // Show/hide appropriate menu items
+        const inWorkingSet = this.isInWorkingSet(logId);
+        const addItem = menu.querySelector('[data-action="add"]');
+        const removeItem = menu.querySelector('[data-action="remove"]');
+
+        addItem.style.display = inWorkingSet ? 'none' : 'block';
+        removeItem.style.display = inWorkingSet ? 'block' : 'none';
+
+        // Position menu near cursor
+        let x = event.clientX;
+        let y = event.clientY;
+
+        // Show menu temporarily to measure dimensions
+        menu.style.display = 'block';
+        menu.style.opacity = '0';
+
+        const menuRect = menu.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+
+        // Adjust position to keep menu on screen
+        if (x + menuRect.width > viewportWidth) {
+            x = viewportWidth - menuRect.width - 5;
+        }
+        if (y + menuRect.height > viewportHeight) {
+            y = viewportHeight - menuRect.height - 5;
+        }
+
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        menu.style.opacity = '1';
+    }
+
+    hideContextMenu() {
+        if (this.contextMenu) {
+            this.contextMenu.style.display = 'none';
+        }
+        if (this.fiberContextMenu) {
+            this.fiberContextMenu.style.display = 'none';
+        }
+    }
+
+    initFiberContextMenu() {
+        // Create fiber context menu element
+        const menu = document.createElement('div');
+        menu.id = 'fiber-context-menu';
+        menu.className = 'context-menu';
+        menu.style.display = 'none';
+        menu.innerHTML = `
+            <button class="context-menu-item" data-action="add-fiber">Add Fiber to Working Set</button>
+            <button class="context-menu-item" data-action="remove-fiber">Remove Fiber from Working Set</button>
+            <div class="context-menu-separator"></div>
+            <button class="context-menu-item" data-action="copy-fiber-id">Copy Fiber ID</button>
+        `;
+        document.body.appendChild(menu);
+        this.fiberContextMenu = menu;
+
+        // Handle fiber context menu item clicks
+        menu.addEventListener('click', async (e) => {
+            const item = e.target.closest('.context-menu-item');
+            if (!item) return;
+
+            const action = item.getAttribute('data-action');
+            const fiberId = menu.getAttribute('data-fiber-id');
+
+            try {
+                switch (action) {
+                    case 'add-fiber':
+                        const addedCount = await this.addFiberToWorkingSet(fiberId);
+                        console.log(`Added ${addedCount} logs from fiber to working set`);
+                        break;
+                    case 'remove-fiber':
+                        const removedCount = await this.removeFiberFromWorkingSet(fiberId);
+                        console.log(`Removed ${removedCount} logs from fiber from working set`);
+                        break;
+                    case 'copy-fiber-id':
+                        navigator.clipboard.writeText(fiberId);
+                        break;
+                }
+            } catch (error) {
+                console.error('Fiber context menu action failed:', error);
+            }
+
+            this.hideContextMenu();
+        });
+    }
+
+    async showFiberContextMenu(event, fiberId) {
+        if (!fiberId) return;
+
+        const menu = this.fiberContextMenu;
+        menu.setAttribute('data-fiber-id', fiberId);
+
+        // Check if fiber is in working set
+        const inWorkingSet = await this.isFiberInWorkingSet(fiberId);
+        const addItem = menu.querySelector('[data-action="add-fiber"]');
+        const removeItem = menu.querySelector('[data-action="remove-fiber"]');
+
+        addItem.style.display = inWorkingSet ? 'none' : 'block';
+        removeItem.style.display = inWorkingSet ? 'block' : 'none';
+
+        // Position menu near cursor
+        let x = event.clientX;
+        let y = event.clientY;
+
+        // Show menu temporarily to measure dimensions
+        menu.style.display = 'block';
+        menu.style.opacity = '0';
+
+        const menuRect = menu.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+
+        // Adjust position to keep menu on screen
+        if (x + menuRect.width > viewportWidth) {
+            x = viewportWidth - menuRect.width - 5;
+        }
+        if (y + menuRect.height > viewportHeight) {
+            y = viewportHeight - menuRect.height - 5;
+        }
+
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        menu.style.opacity = '1';
+    }
+
+    // =========================================================================
+    // Working Set Visual Indicators
+    // =========================================================================
+
+    initWorkingSetIndicators() {
+        // This will be called after initial render to add indicators
+        // The actual indicators are added in updateWorkingSetIndicators
+    }
+
+    updateWorkingSetIndicators() {
+        // Add star indicators to log lines in working set
+        const logLines = document.querySelectorAll('.log-line');
+        logLines.forEach(line => {
+            const logId = line.getAttribute('data-log-id');
+            if (!logId) return;
+
+            const inWorkingSet = this.isInWorkingSet(logId);
+
+            // Remove existing indicator
+            const existingIndicator = line.querySelector('.working-set-indicator');
+            if (existingIndicator) {
+                existingIndicator.remove();
+            }
+
+            // Add indicator if in working set
+            if (inWorkingSet) {
+                const indicator = document.createElement('span');
+                indicator.className = 'working-set-indicator';
+                indicator.textContent = '★';
+                indicator.title = 'In Working Set';
+                line.appendChild(indicator);
+                line.classList.add('in-working-set');
+            } else {
+                line.classList.remove('in-working-set');
+            }
+        });
+
+        // Update working set panel if it exists
+        if (this.fiberProcessingEditorPage && this.fiberProcessingEditorPage.renderWorkingSetPanel) {
+            this.fiberProcessingEditorPage.renderWorkingSetPanel();
+        }
     }
 }
 

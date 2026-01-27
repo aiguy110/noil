@@ -8,23 +8,157 @@ class ConfigEditor {
         this.currentConfig = null;
         this.originalYaml = '';
         this.elements = {};
+        this.editorView = null; // CodeMirror editor instance
+        this.editableCompartment = null; // Compartment for dynamic reconfiguration
     }
 
     async init() {
         // Get DOM elements
         this.elements = {
-            editor: document.getElementById('config-yaml-editor'),
+            editorContainer: document.getElementById('config-yaml-editor'),
             saveBtn: document.getElementById('config-save'),
             resetBtn: document.getElementById('config-reset'),
             historyBtn: document.getElementById('config-history'),
             status: document.querySelector('.config-status'),
         };
 
+        // Initialize CodeMirror editor
+        try {
+            await this.initCodeMirror();
+        } catch (error) {
+            console.warn('Failed to initialize CodeMirror, falling back to textarea:', error);
+            this.useFallbackEditor();
+        }
+
         // Load current config
         await this.loadCurrentConfig();
 
         // Setup event listeners
         this.setupEventListeners();
+    }
+
+    useFallbackEditor() {
+        // If CodeMirror fails, just use the textarea
+        const textarea = this.elements.editorContainer;
+        if (textarea) {
+            textarea.style.display = 'block';
+            textarea.value = '';
+            this.editorView = null;
+        }
+    }
+
+    async initCodeMirror() {
+        // Wait for CodeMirror to be loaded (with timeout)
+        if (!window.CodeMirror && !window.CodeMirrorLoadError) {
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('CodeMirror failed to load (timeout)'));
+                }, 10000);
+
+                const onReady = () => {
+                    clearTimeout(timeout);
+                    window.removeEventListener('codemirror-ready', onReady);
+                    resolve();
+                };
+
+                const checkError = setInterval(() => {
+                    if (window.CodeMirrorLoadError) {
+                        clearTimeout(timeout);
+                        clearInterval(checkError);
+                        window.removeEventListener('codemirror-ready', onReady);
+                        reject(window.CodeMirrorLoadError);
+                    }
+                }, 100);
+
+                window.addEventListener('codemirror-ready', onReady);
+
+                if (window.CodeMirror) {
+                    clearTimeout(timeout);
+                    clearInterval(checkError);
+                    window.removeEventListener('codemirror-ready', onReady);
+                    resolve();
+                }
+            });
+        }
+
+        if (window.CodeMirrorLoadError) {
+            throw new Error('CodeMirror failed to load: ' + window.CodeMirrorLoadError.message);
+        }
+
+        if (!window.CodeMirror) {
+            throw new Error('CodeMirror is not available');
+        }
+
+        const { EditorView, EditorState, Compartment, basicSetup, yaml } = window.CodeMirror;
+
+        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml) {
+            throw new Error('CodeMirror components are incomplete');
+        }
+
+        // Create compartment for editable state
+        this.editableCompartment = new Compartment();
+
+        // Create editor state with YAML syntax highlighting
+        const startState = EditorState.create({
+            doc: '',
+            extensions: [
+                basicSetup,
+                yaml,
+                EditorState.tabSize.of(2),
+                this.editableCompartment.of(EditorView.editable.of(true))
+            ]
+        });
+
+        // Replace textarea with CodeMirror
+        const textarea = this.elements.editorContainer;
+        if (!textarea) {
+            throw new Error('Editor textarea element not found');
+        }
+
+        // Hide textarea
+        textarea.style.display = 'none';
+
+        // Create wrapper div
+        const editorWrapper = document.createElement('div');
+        editorWrapper.className = 'cm-editor-wrapper';
+        textarea.parentElement.insertBefore(editorWrapper, textarea.nextSibling);
+
+        // Create CodeMirror editor
+        this.editorView = new EditorView({
+            state: startState,
+            parent: editorWrapper
+        });
+
+        if (!this.editorView || !this.editorView.dom) {
+            throw new Error('Failed to create CodeMirror editor');
+        }
+    }
+
+    setEditorValue(value) {
+        if (this.editorView) {
+            // CodeMirror mode
+            this.editorView.dispatch({
+                changes: {
+                    from: 0,
+                    to: this.editorView.state.doc.length,
+                    insert: value
+                }
+            });
+        } else if (this.elements.editorContainer) {
+            // Fallback textarea mode
+            this.elements.editorContainer.value = value;
+        }
+    }
+
+    getEditorValue() {
+        if (this.editorView) {
+            // CodeMirror mode
+            return this.editorView.state.doc.toString();
+        } else if (this.elements.editorContainer) {
+            // Fallback textarea mode
+            return this.elements.editorContainer.value;
+        }
+        return '';
     }
 
     setupEventListeners() {
@@ -49,7 +183,7 @@ class ConfigEditor {
             this.showStatus('Loading configuration...', 'info');
             this.currentConfig = await this.api.getCurrentConfig();
             this.originalYaml = this.currentConfig.yaml_content;
-            this.elements.editor.value = this.originalYaml;
+            this.setEditorValue(this.originalYaml);
             this.showStatus('Configuration loaded', 'success');
         } catch (error) {
             this.showStatus(`Error loading config: ${error.message}`, 'error');
@@ -59,7 +193,7 @@ class ConfigEditor {
 
 
     async saveConfig() {
-        const yaml = this.elements.editor.value;
+        const yaml = this.getEditorValue();
 
         // Validate first
         try {
@@ -99,9 +233,9 @@ class ConfigEditor {
     }
 
     resetConfig() {
-        if (this.elements.editor.value !== this.originalYaml) {
+        if (this.getEditorValue() !== this.originalYaml) {
             if (confirm('Discard unsaved changes?')) {
-                this.elements.editor.value = this.originalYaml;
+                this.setEditorValue(this.originalYaml);
                 this.showStatus('Changes discarded', 'info');
             }
         } else {

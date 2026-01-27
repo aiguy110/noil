@@ -168,6 +168,18 @@ class NoilAPI {
             method: 'POST',
         });
     }
+
+    // Working Set Testing
+    async testWorkingSet(fiberTypeName, logIds, yamlContent) {
+        return this.request(`/api/fiber-types/${encodeURIComponent(fiberTypeName)}/test-working-set`, {
+            method: 'POST',
+            body: JSON.stringify({
+                log_ids: logIds,
+                yaml_content: yamlContent,
+                include_margin: true
+            }),
+        });
+    }
 }
 
 // Export singleton instance

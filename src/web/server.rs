@@ -14,7 +14,7 @@ use super::api::{
     get_config_history, get_config_version, get_current_config, get_fiber, get_fiber_logs,
     get_fiber_type, get_log, get_log_fibers, get_reprocess_status, health_check,
     hot_reload_fiber_type, list_fiber_types, list_fibers, list_logs, list_sources,
-    start_reprocessing, update_config, update_fiber_type, AppState,
+    start_reprocessing, test_working_set, update_config, update_fiber_type, AppState,
 };
 
 /// Start the web server with the given storage backend and configuration
@@ -58,6 +58,7 @@ pub async fn run_server(
         .route("/api/fiber-types", get(list_fiber_types).post(create_fiber_type))
         .route("/api/fiber-types/:name", get(get_fiber_type).put(update_fiber_type).delete(delete_fiber_type))
         .route("/api/fiber-types/:name/hot-reload", post(hot_reload_fiber_type))
+        .route("/api/fiber-types/:name/test-working-set", post(test_working_set))
         .route("/api/sources", get(list_sources))
         .route("/api/config/current", get(get_current_config))
         .route("/api/config/history", get(get_config_history))

@@ -202,6 +202,9 @@ pub trait Storage: Send + Sync {
 
     /// Mark a config version as active (deactivates all others)
     async fn mark_config_active(&self, version_hash: &str) -> Result<(), StorageError>;
+
+    /// Update the created_at timestamp of an existing config version (used when re-saving the same config)
+    async fn touch_config_version(&self, version_hash: &str) -> Result<(), StorageError>;
 }
 
 /// Storage errors
