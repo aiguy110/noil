@@ -37,6 +37,7 @@ class NoilApp {
     async init() {
         // Initialize components
         this.initHeader();
+        this.initRouter();
         this.initHamburgerMenu();
         this.initSettingsModal();
         this.initDrawer();
@@ -67,6 +68,65 @@ class NoilApp {
         } catch (error) {
             console.error('Failed to fetch version:', error);
             document.getElementById('header-version').textContent = '(v?.?.?)';
+        }
+
+        // Prevent default navigation on logo click, use router
+        const logoLink = document.querySelector('.header-logo-link');
+        if (logoLink) {
+            logoLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.navigateToRoute('/');
+            });
+        }
+    }
+
+    initRouter() {
+        // Define routes
+        this.routes = {
+            '/': 'log-view',
+            '/viewer': 'log-view',
+            '/fiber-rules': 'fiber-rules'
+        };
+
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', (e) => {
+            this.handleRoute(window.location.pathname, false);
+        });
+
+        // Handle initial route
+        this.handleRoute(window.location.pathname, true);
+    }
+
+    handleRoute(path, replaceState = false) {
+        // Normalize path (remove trailing slash except for root)
+        if (path !== '/' && path.endsWith('/')) {
+            path = path.slice(0, -1);
+        }
+
+        // Find matching route
+        const pageName = this.routes[path];
+
+        if (pageName) {
+            this.switchPage(pageName, false);
+            if (replaceState) {
+                history.replaceState({ page: pageName }, '', path);
+            }
+        } else {
+            // Default to log-view if route not found
+            console.warn(`Route not found: ${path}, defaulting to /viewer`);
+            this.navigateToRoute('/', true);
+        }
+    }
+
+    navigateToRoute(path, replaceState = false) {
+        const pageName = this.routes[path];
+        if (pageName) {
+            this.switchPage(pageName, true);
+            if (replaceState) {
+                history.replaceState({ page: pageName }, '', path);
+            } else {
+                history.pushState({ page: pageName }, '', path);
+            }
         }
     }
 
@@ -1109,7 +1169,7 @@ class NoilApp {
         });
     }
 
-    async switchPage(pageName) {
+    async switchPage(pageName, updateUrl = true) {
         // Hide all pages
         document.querySelectorAll('.page').forEach(page => {
             page.classList.remove('active');
@@ -1123,6 +1183,17 @@ class NoilApp {
 
             // Update active menu item
             this.updateHamburgerMenuActiveState();
+
+            // Update URL if requested
+            if (updateUrl) {
+                // Find the route path for this page
+                const routePath = Object.keys(this.routes).find(path => this.routes[path] === pageName);
+                if (routePath) {
+                    // Use /viewer as canonical URL for log-view (not /)
+                    const urlPath = pageName === 'log-view' ? '/viewer' : routePath;
+                    history.pushState({ page: pageName }, '', urlPath);
+                }
+            }
 
             // Initialize fiber processing editor on first open
             if (pageName === 'fiber-rules' && !this.fiberProcessingEditorPage) {

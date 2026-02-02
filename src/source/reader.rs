@@ -24,7 +24,7 @@ pub enum ReaderError {
     ParseError(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogRecord {
     pub id: Uuid,
     pub timestamp: DateTime<Utc>,

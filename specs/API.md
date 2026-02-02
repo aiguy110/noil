@@ -8,7 +8,7 @@ The API server is configured in `config.yml`:
 
 ```yaml
 web:
-  listen: 127.0.0.1:8080  # Address to bind the web server
+  listen: 127.0.0.1:7104  # Address to bind the web server
 ```
 
 The server starts automatically when you run `noil` and runs concurrently with the log processing pipeline.
@@ -17,7 +17,7 @@ The server starts automatically when you run `noil` and runs concurrently with t
 
 All API endpoints are prefixed with `/api/` except for the health check endpoint.
 
-Example base URL: `http://127.0.0.1:8080`
+Example base URL: `http://127.0.0.1:7104`
 
 ## Authentication
 
@@ -88,7 +88,7 @@ GET /health
 
 **Example:**
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7104/health
 ```
 
 ---
@@ -141,13 +141,13 @@ GET /api/logs?start={timestamp}&end={timestamp}&source={source_id}&limit={n}&off
 
 ```bash
 # Get logs from the last hour
-curl "http://localhost:8080/api/logs?start=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+curl "http://localhost:7104/api/logs?start=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
 
 # Get logs with pagination
-curl "http://localhost:8080/api/logs?limit=50&offset=100"
+curl "http://localhost:7104/api/logs?limit=50&offset=100"
 
 # Get logs in a specific time range
-curl "http://localhost:8080/api/logs?start=2025-12-16T10:00:00Z&end=2025-12-16T11:00:00Z"
+curl "http://localhost:7104/api/logs?start=2025-12-16T10:00:00Z&end=2025-12-16T11:00:00Z"
 ```
 
 ---
@@ -190,7 +190,7 @@ GET /api/logs/{log_id}
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/logs/550e8400-e29b-41d4-a716-446655440000
+curl http://localhost:7104/api/logs/550e8400-e29b-41d4-a716-446655440000
 ```
 
 ---
@@ -247,7 +247,7 @@ GET /api/logs/{log_id}/fibers
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/logs/550e8400-e29b-41d4-a716-446655440000/fibers
+curl http://localhost:7104/api/logs/550e8400-e29b-41d4-a716-446655440000/fibers
 ```
 
 ---
@@ -307,13 +307,13 @@ GET /api/fibers?type={fiber_type}&closed={boolean}&limit={n}&offset={n}
 
 ```bash
 # Get all request_trace fibers
-curl "http://localhost:8080/api/fibers?type=request_trace"
+curl "http://localhost:7104/api/fibers?type=request_trace"
 
 # Get only closed fibers
-curl "http://localhost:8080/api/fibers?type=request_trace&closed=true"
+curl "http://localhost:7104/api/fibers?type=request_trace&closed=true"
 
 # Get only open fibers with pagination
-curl "http://localhost:8080/api/fibers?type=request_trace&closed=false&limit=50"
+curl "http://localhost:7104/api/fibers?type=request_trace&closed=false&limit=50"
 ```
 
 ---
@@ -365,7 +365,7 @@ GET /api/fibers/{fiber_id}
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/fibers/660e8400-e29b-41d4-a716-446655440000
+curl http://localhost:7104/api/fibers/660e8400-e29b-41d4-a716-446655440000
 ```
 
 ---
@@ -434,10 +434,10 @@ GET /api/fibers/{fiber_id}/logs?limit={n}&offset={n}
 **Example:**
 ```bash
 # Get all logs for a fiber
-curl http://localhost:8080/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs
+curl http://localhost:7104/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs
 
 # Get logs with pagination
-curl "http://localhost:8080/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs?limit=10&offset=0"
+curl "http://localhost:7104/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs?limit=10&offset=0"
 ```
 
 ---
@@ -448,31 +448,31 @@ curl "http://localhost:8080/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs
 
 1. Start with a known log (e.g., from a user report):
    ```bash
-   curl http://localhost:8080/api/logs/550e8400-e29b-41d4-a716-446655440000
+   curl http://localhost:7104/api/logs/550e8400-e29b-41d4-a716-446655440000
    ```
 
 2. Find all fibers containing this log:
    ```bash
-   curl http://localhost:8080/api/logs/550e8400-e29b-41d4-a716-446655440000/fibers
+   curl http://localhost:7104/api/logs/550e8400-e29b-41d4-a716-446655440000/fibers
    ```
 
 3. Get all logs in the relevant fiber to see the complete trace:
    ```bash
-   curl http://localhost:8080/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs
+   curl http://localhost:7104/api/fibers/660e8400-e29b-41d4-a716-446655440000/logs
    ```
 
 ### Monitoring Recent Activity
 
 Get logs from the last 5 minutes:
 ```bash
-curl "http://localhost:8080/api/logs?start=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+curl "http://localhost:7104/api/logs?start=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 ### Finding Open Sessions
 
 Get all open fibers of a specific type:
 ```bash
-curl "http://localhost:8080/api/fibers?type=request_trace&closed=false"
+curl "http://localhost:7104/api/fibers?type=request_trace&closed=false"
 ```
 
 ### Analyzing a Specific Fiber
@@ -482,10 +482,10 @@ Get fiber details and all its logs:
 FIBER_ID="660e8400-e29b-41d4-a716-446655440000"
 
 # Get fiber metadata
-curl http://localhost:8080/api/fibers/$FIBER_ID | jq .
+curl http://localhost:7104/api/fibers/$FIBER_ID | jq .
 
 # Get all logs in chronological order
-curl http://localhost:8080/api/fibers/$FIBER_ID/logs | jq '.logs[] | {timestamp, source_id, raw_text}'
+curl http://localhost:7104/api/fibers/$FIBER_ID/logs | jq '.logs[] | {timestamp, source_id, raw_text}'
 ```
 
 ## Response Fields Reference

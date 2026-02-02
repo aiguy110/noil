@@ -367,6 +367,9 @@ mod tests {
         );
 
         Config {
+            mode: crate::config::types::OperationMode::Standalone,
+            collector: None,
+            parent: None,
             sources,
             fiber_types,
             auto_source_fibers: true,
@@ -393,7 +396,7 @@ mod tests {
                 flush_interval_seconds: 5,
             },
             web: WebConfig {
-                listen: "127.0.0.1:8080".to_string(),
+                listen: "127.0.0.1:7104".to_string(),
             },
         }
     }

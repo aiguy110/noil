@@ -77,7 +77,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -138,7 +138,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -198,7 +198,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -260,7 +260,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -326,7 +326,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -390,7 +390,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -453,7 +453,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -536,7 +536,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -621,7 +621,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -694,7 +694,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -783,7 +783,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -865,7 +865,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -931,7 +931,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7104
 "#;
 
     fs::write(&config_path, config_yaml).unwrap();
@@ -949,4 +949,215 @@ web:
         Some("Custom override of auto-generated fiber".to_string())
     );
     assert_eq!(fiber.attributes[0].name, "custom_attr");
+}
+
+#[test]
+fn test_env_var_expansion_in_paths() {
+    use std::env;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Set a test environment variable
+    env::set_var("NOIL_TEST_DIR", "/tmp/noil-test");
+
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: $env{NOIL_TEST_DIR}/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      test_source:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: $env{NOIL_TEST_DIR}/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Verify that environment variables were expanded
+    assert_eq!(
+        config.sources["test_source"].path.to_str().unwrap(),
+        "/tmp/noil-test/test.log",
+        "Source path should have env var expanded"
+    );
+    assert_eq!(
+        config.storage.path.to_str().unwrap(),
+        "/tmp/noil-test/test.duckdb",
+        "Storage path should have env var expanded"
+    );
+
+    // Clean up
+    env::remove_var("NOIL_TEST_DIR");
+}
+
+#[test]
+fn test_env_var_expansion_with_unset_var() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: $env{NONEXISTENT_VAR}/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      test_source:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let err = load_config(&config_path)
+        .expect_err("Config should be invalid when env var is unset");
+    let message = err.to_string();
+    assert!(
+        message.contains("Environment variable $env{NONEXISTENT_VAR} is not set."),
+        "Unexpected error message: {message}"
+    );
+}
+
+#[test]
+fn test_env_var_expansion_combined_with_tilde() {
+    use std::env;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Set a test environment variable
+    env::set_var("NOIL_SUBDIR", "logs");
+
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: ~/$env{NOIL_SUBDIR}/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      test_source:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    // Verify that both env var expansion and tilde expansion work together
+    if let Some(home) = dirs::home_dir() {
+        let expected_path = home.join("logs/test.log");
+        assert_eq!(
+            config.sources["test_source"].path, expected_path,
+            "Path should have both env var and tilde expanded"
+        );
+    }
+
+    // Clean up
+    env::remove_var("NOIL_SUBDIR");
 }

@@ -1,0 +1,145 @@
+# =============================================================================
+# NOIL COLLECTOR MODE CONFIGURATION
+# =============================================================================
+# This configuration demonstrates a collector deployment.
+# Collectors are lightweight instances that read local log files and serve
+# batched, ordered logs to a parent instance via HTTP.
+#
+# Use case: Deploy collectors on edge nodes where logs are generated, and run
+# a parent instance in a central location for fiber processing and storage.
+
+# =============================================================================
+# OPERATION MODE
+# =============================================================================
+
+mode: collector
+
+# =============================================================================
+# SOURCES
+# =============================================================================
+# Define local log files to read. The collector will sequence these logs
+# and batch them into time-windowed epochs for the parent to pull.
+
+sources:
+  program1:
+    type: file
+    path: samples/logs/program1.log
+    timestamp:
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: iso8601
+    read:
+      start: beginning
+      follow: false  # Static sample file
+
+  program2:
+    type: file
+    path: samples/logs/program2.log
+    timestamp:
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: iso8601
+    read:
+      start: beginning
+      follow: false  # Static sample file
+
+  nginx_access:
+    type: file
+    path: samples/logs/nginx_access.log
+    timestamp:
+      pattern: '^\[(?P<ts>[^\]]+)\]'
+      format: '%d/%b/%Y:%H:%M:%S %z'
+    read:
+      start: beginning
+      follow: false  # Static sample file
+
+  simple_service:
+    type: file
+    path: samples/logs/simple_service.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})'
+      format: '%Y-%m-%d %H:%M:%S%.3f'
+    read:
+      start: beginning
+      follow: false  # Static sample file
+
+# =============================================================================
+# COLLECTOR MODE CONFIGURATION
+# =============================================================================
+
+collector:
+  # Listen address for collector HTTP API
+  # Parent instances will connect to this address to pull batches
+  # Use 0.0.0.0 to allow connections from other machines
+  listen: 127.0.0.1:7105
+
+  # Epoch duration: time window for batching logs
+  # Longer = fewer network requests, higher latency
+  # Shorter = more network requests, lower latency
+  # Recommended: 5s-30s depending on log volume and latency requirements
+  epoch_duration: 10s
+
+  # Buffer configuration
+  buffer:
+    # Maximum number of epochs to buffer before applying overflow strategy
+    # Each epoch consumes memory proportional to log volume in that window
+    # For 10s epochs: 100 epochs = 16.7 minutes of logs
+    # Recommended: Size buffer to handle expected parent downtime
+    max_epochs: 100
+
+    # Strategy when buffer is full:
+    #   block        - Block source readers (backpressure)
+    #                  No data loss, but sources stop advancing until parent catches up
+    #   drop_oldest  - Drop oldest unacknowledged batch
+    #                  Allows continued progress, but loses historical data
+    #   wait_forever - Unlimited buffer growth (risk of OOM)
+    # Recommended: block for production (ensures no data loss)
+    strategy: block
+
+  # Checkpoint configuration
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+  # Optional: minimal status UI
+  status_ui:
+    enabled: true  # Provides read-only status page showing buffer, sources, watermarks
+
+# =============================================================================
+# SEQUENCER SETTINGS
+# =============================================================================
+
+sequencer:
+  # Safety margin when computing watermarks
+  # Allows for small clock skew or out-of-order timestamps
+  watermark_safety_margin: 5s
+
+# =============================================================================
+# STORAGE SETTINGS
+# =============================================================================
+# Collector uses DuckDB only for checkpoints (not for log storage)
+
+storage:
+  path: $env{TMPDIR}/noil-collector.duckdb
+  batch_size: 100
+  flush_interval_seconds: 5
+
+# =============================================================================
+# WEB SERVER SETTINGS
+# =============================================================================
+# The collector's web server serves the status UI and HTTP API
+
+web:
+  listen: 0.0.0.0:7105  # Should match collector.listen
+  # After starting, visit http://<collector-host>:7105 to view status
+
+# =============================================================================
+# UNUSED SECTIONS (Collector Mode)
+# =============================================================================
+# The following sections are ignored in collector mode:
+#   - fiber_types: Fiber processing happens on the parent
+#   - pipeline: No downstream processing on collector
+
+# Note: You can still configure pipeline.checkpoint for collector checkpoints
+pipeline:
+  checkpoint:
+    enabled: true
+    interval_seconds: 30

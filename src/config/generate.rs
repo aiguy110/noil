@@ -10,9 +10,25 @@ pub fn generate_starter_config() -> String {
 #   3. /etc/noil/config.yml
 
 # =============================================================================
+# OPERATION MODE
+# =============================================================================
+# Mode options:
+#   standalone - Single instance with sources, fiber processing, and web UI (default)
+#   collector  - Lightweight instance that reads sources and serves batches to parent
+#   parent     - Instance that pulls from collectors and performs fiber processing
+#
+# For most deployments, use standalone mode. For distributed deployments with
+# logs on remote machines, run collectors on edge nodes and parent in a central
+# location. See COLLECTOR_MODE.md for detailed architecture.
+
+mode: standalone  # or: collector, parent
+
+# =============================================================================
 # SOURCES
 # =============================================================================
 # Define log files to ingest. Each source needs a unique ID and timestamp config.
+# Required for: standalone, collector modes
+# Ignored for: parent mode (gets logs from collectors instead)
 
 sources:
   nginx_access:
@@ -178,6 +194,79 @@ fiber_types:
           - regex: '.+'  # Match any line
 
 # =============================================================================
+# COLLECTOR MODE CONFIGURATION (only for mode: collector)
+# =============================================================================
+# Uncomment and configure this section when running in collector mode.
+# Collectors are lightweight instances that read local log files and serve
+# batched, ordered logs to a parent instance via HTTP.
+
+# collector:
+#   # Listen address for collector HTTP API
+#   # Parent instances will connect to this address to pull batches
+#   listen: 0.0.0.0:7105
+#
+#   # Epoch duration: time window for batching logs
+#   # Longer = fewer network requests, higher latency
+#   # Shorter = more network requests, lower latency
+#   # Typical: 5s-30s
+#   epoch_duration: 10s
+#
+#   # Buffer configuration
+#   buffer:
+#     # Maximum number of epochs to buffer before applying overflow strategy
+#     # Each epoch consumes memory proportional to log volume in that window
+#     # Typical: 50-200 epochs (5-30 minutes of logs at 10s/epoch)
+#     max_epochs: 100
+#
+#     # Strategy when buffer is full:
+#     #   block        - Block source readers (backpressure)
+#     #                  No data loss, but sources stop advancing
+#     #   drop_oldest  - Drop oldest unacknowledged batch
+#     #                  Allows progress, but loses historical data
+#     #   wait_forever - Unlimited buffer growth (risk of OOM)
+#     strategy: block
+#
+#   # Checkpoint configuration (saves to local database)
+#   checkpoint:
+#     enabled: true
+#     interval_seconds: 30
+#
+#   # Optional: minimal status UI on web.listen address
+#   status_ui:
+#     enabled: true  # Read-only status page showing buffer, sources, watermarks
+
+# =============================================================================
+# PARENT MODE CONFIGURATION (only for mode: parent)
+# =============================================================================
+# Uncomment and configure this section when running in parent mode.
+# Parents pull batches from multiple collectors and perform centralized
+# fiber processing and storage.
+
+# parent:
+#   # Collector endpoints to pull from
+#   collectors:
+#     - id: collector1             # Unique collector ID
+#       url: http://192.168.1.10:7105
+#       retry_interval: 5s         # Retry delay on connection failure
+#       timeout: 30s               # HTTP request timeout
+#
+#     - id: collector2
+#       url: http://192.168.1.11:7105
+#       retry_interval: 5s
+#       timeout: 30s
+#
+#   # Polling interval: how often to check collectors for new batches
+#   # Lower = lower latency, higher network overhead
+#   # Higher = higher latency, lower network overhead
+#   # Typical: 1s-5s
+#   poll_interval: 1s
+#
+#   # Backpressure handling for parent's internal pipeline
+#   backpressure:
+#     strategy: block
+#     buffer_limit: 10000
+
+# =============================================================================
 # PIPELINE SETTINGS
 # =============================================================================
 
@@ -223,8 +312,8 @@ storage:
 
 web:
   # Address to bind the web UI
-  listen: 127.0.0.1:8080
-  # Set to 0.0.0.0:8080 to allow external connections
+  listen: 127.0.0.1:7104
+  # Set to 0.0.0.0:7104 to allow external connections
 "#
     .to_string()
 }

@@ -25,7 +25,7 @@ Using the popular **Dracula theme** for excellent readability and eye-friendly c
 
 ## Testing Your Setup
 
-1. **Refresh your browser** at http://localhost:8080
+1. **Refresh your browser** at http://localhost:7104
 2. Navigate to **Fiber Rules** via the hamburger menu
 3. Select a fiber type from the left sidebar
 4. The CodeMirror editor should appear with syntax highlighting

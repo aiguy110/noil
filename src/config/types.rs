@@ -5,7 +5,18 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_mode")]
+    pub mode: OperationMode,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collector: Option<CollectorConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentConfig>,
+
+    #[serde(default)]
     pub sources: HashMap<String, SourceConfig>,
+    #[serde(default)]
     pub fiber_types: HashMap<String, FiberTypeConfig>,
     #[serde(default = "default_auto_source_fibers")]
     pub auto_source_fibers: bool,
@@ -17,6 +28,112 @@ pub struct Config {
 
 fn default_auto_source_fibers() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationMode {
+    Standalone,
+    Collector,
+    Parent,
+}
+
+fn default_mode() -> OperationMode {
+    OperationMode::Standalone
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorConfig {
+    pub listen: String,
+
+    #[serde(with = "humantime_serde")]
+    pub epoch_duration: Duration,
+
+    pub buffer: CollectorBufferConfig,
+
+    #[serde(default)]
+    pub checkpoint: CheckpointConfig,
+
+    #[serde(default)]
+    pub status_ui: StatusUiConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorBufferConfig {
+    pub max_epochs: usize,
+    pub strategy: BufferStrategy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BufferStrategy {
+    Block,
+    DropOldest,
+    WaitForever,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusUiConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for StatusUiConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: 30,
+        }
+    }
+}
+
+impl Default for BackpressureConfig {
+    fn default() -> Self {
+        Self {
+            strategy: BackpressureStrategy::Block,
+            buffer_limit: 10000,
+        }
+    }
+}
+
+impl Default for ErrorConfig {
+    fn default() -> Self {
+        Self {
+            on_parse_error: ParseErrorStrategy::Drop,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParentConfig {
+    pub collectors: Vec<CollectorEndpoint>,
+
+    #[serde(with = "humantime_serde")]
+    pub poll_interval: Duration,
+
+    pub backpressure: BackpressureConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorEndpoint {
+    pub id: String,
+    pub url: String,
+
+    #[serde(with = "humantime_serde")]
+    pub retry_interval: Duration,
+
+    #[serde(with = "humantime_serde")]
+    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,8 +240,11 @@ pub struct PatternConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
+    #[serde(default)]
     pub backpressure: BackpressureConfig,
+    #[serde(default)]
     pub errors: ErrorConfig,
+    #[serde(default)]
     pub checkpoint: CheckpointConfig,
 }
 
@@ -168,9 +288,9 @@ pub struct CheckpointConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequencerConfig {
-    #[serde(with = "duration_format")]
+    #[serde(default, with = "duration_format")]
     pub batch_epoch_duration: Option<Duration>,
-    #[serde(with = "duration_format")]
+    #[serde(default, with = "duration_format")]
     pub watermark_safety_margin: Option<Duration>,
 }
 

@@ -1,5 +1,5 @@
 use super::types::*;
-use crate::config::expand_tilde;
+use crate::config::{expand_env_vars, expand_tilde};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -48,6 +48,12 @@ pub fn load_config_with_yaml(path: &Path) -> Result<(Config, String), ConfigErro
         ))
     })?;
 
+    // Expand environment variables in the YAML string before parsing
+    let yaml_string = expand_env_vars(&yaml_string);
+
+    // Check for unexpanded environment variables
+    check_unexpanded_vars(&yaml_string)?;
+
     let mut config: Config = serde_yaml::from_str(&yaml_string).map_err(|e| {
         // Wrap error with file context
         ConfigError::Io(std::io::Error::new(
@@ -67,6 +73,48 @@ pub fn load_config_with_yaml(path: &Path) -> Result<(Config, String), ConfigErro
     validate_config(&config)?;
 
     Ok((config, yaml_string))
+}
+
+/// Checks for unexpanded environment variables and returns a helpful error
+fn check_unexpanded_vars(yaml_string: &str) -> Result<(), ConfigError> {
+    use regex::Regex;
+
+    let re = Regex::new(r"\$env\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+    let mut unexpanded_vars: Vec<String> = re
+        .captures_iter(yaml_string)
+        .map(|cap| cap.get(1).unwrap().as_str().to_string())
+        .collect();
+
+    if unexpanded_vars.is_empty() {
+        return Ok(());
+    }
+
+    // Remove duplicates and sort
+    unexpanded_vars.sort();
+    unexpanded_vars.dedup();
+
+    let var_list = unexpanded_vars.join(", ");
+    let error_msg = if unexpanded_vars.len() == 1 {
+        format!(
+            "Environment variable $env{{{0}}} is not set.\n\
+             \n\
+             To fix this, either:\n\
+             1. Set the environment variable: export {0}=/path/to/directory\n\
+             2. Replace $env{{{0}}} in the config file with an actual path",
+            unexpanded_vars[0]
+        )
+    } else {
+        format!(
+            "Environment variables are not set: {}\n\
+             \n\
+             To fix this, either:\n\
+             1. Set the environment variables (e.g., export TMPDIR=/tmp)\n\
+             2. Replace the variables in the config file with actual paths",
+            var_list
+        )
+    };
+
+    Err(ConfigError::Validation(error_msg))
 }
 
 /// Expands tilde (~) in all PathBuf fields in the config.
@@ -129,12 +177,63 @@ fn add_auto_source_fibers(config: &mut Config) {
     }
 }
 
+/// Adds auto-generated source fiber types for sources from a provided list (e.g., from database).
+/// Used in parent mode where sources come from collectors, not from local config.
+pub fn add_auto_source_fibers_from_list(config: &mut Config, source_ids: &[String]) {
+    for source_name in source_ids {
+        let fiber_type_name = source_name.clone();
+
+        // Skip if a fiber type with this name already exists
+        if config.fiber_types.contains_key(&fiber_type_name) {
+            continue;
+        }
+
+        // Create a never-closing fiber type that matches all logs from this source
+        let mut source_patterns = HashMap::new();
+        source_patterns.insert(
+            source_name.clone(),
+            FiberSourceConfig {
+                patterns: vec![PatternConfig {
+                    regex: ".+".to_string(),
+                    release_matching_peer_keys: vec![],
+                    release_self_keys: vec![],
+                    close: false,
+                }],
+            },
+        );
+
+        let fiber_type = FiberTypeConfig {
+            description: Some(format!(
+                "Auto-generated fiber containing all logs from {}",
+                source_name
+            )),
+            temporal: TemporalConfig {
+                max_gap: None, // infinite - never closes due to time
+                gap_mode: GapMode::Session,
+            },
+            attributes: vec![AttributeConfig {
+                name: "source_marker".to_string(),
+                attr_type: AttributeType::String,
+                key: true,
+                derived: Some(source_name.clone()),
+            }],
+            sources: source_patterns,
+            is_source_fiber: true,
+        };
+
+        config.fiber_types.insert(fiber_type_name, fiber_type);
+    }
+}
+
 fn validate_config(config: &Config) -> Result<(), ConfigError> {
     let mut errors = Vec::new();
 
+    // Validate mode-specific requirements
+    validate_mode_config(config, &mut errors);
+
     // Validate each fiber type
     for (fiber_type_name, fiber_type) in &config.fiber_types {
-        validate_fiber_type(fiber_type_name, fiber_type, &config.sources, &mut errors);
+        validate_fiber_type(fiber_type_name, fiber_type, &config.sources, config.mode, &mut errors);
     }
 
     if errors.is_empty() {
@@ -144,32 +243,108 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
     }
 }
 
+fn validate_mode_config(config: &Config, errors: &mut Vec<String>) {
+    match config.mode {
+        OperationMode::Standalone => {
+            // Standalone mode requires sources
+            if config.sources.is_empty() {
+                errors.push(
+                    "standalone mode requires at least one source to be configured".to_string(),
+                );
+            }
+        }
+        OperationMode::Collector => {
+            // Collector mode requires collector config
+            if config.collector.is_none() {
+                errors.push(
+                    "collector mode requires a 'collector' configuration section".to_string(),
+                );
+            }
+            // Collector mode requires sources
+            if config.sources.is_empty() {
+                errors.push(
+                    "collector mode requires at least one source to be configured".to_string(),
+                );
+            }
+        }
+        OperationMode::Parent => {
+            // Parent mode requires parent config
+            if config.parent.is_none() {
+                errors.push("parent mode requires a 'parent' configuration section".to_string());
+            } else if let Some(parent) = &config.parent {
+                // Validate that collectors are configured
+                if parent.collectors.is_empty() {
+                    errors.push(
+                        "parent mode requires at least one collector to be configured".to_string(),
+                    );
+                }
+
+                // Validate collector URLs and IDs
+                let mut collector_ids = HashSet::new();
+                for (i, collector) in parent.collectors.iter().enumerate() {
+                    if collector.id.is_empty() {
+                        errors.push(format!(
+                            "parent.collectors[{}]: collector ID cannot be empty",
+                            i
+                        ));
+                    } else if !collector_ids.insert(&collector.id) {
+                        errors.push(format!(
+                            "parent.collectors[{}]: duplicate collector ID '{}'",
+                            i, collector.id
+                        ));
+                    }
+
+                    if collector.url.is_empty() {
+                        errors.push(format!(
+                            "parent.collectors[{}]: collector URL cannot be empty",
+                            i
+                        ));
+                    }
+                }
+            }
+
+            // Parent mode should not have sources (they're pulled from collectors)
+            if !config.sources.is_empty() {
+                errors.push(
+                    "parent mode gets logs from collectors, not sources. Remove the 'sources' section or use standalone/collector mode instead.".to_string(),
+                );
+            }
+        }
+    }
+}
+
 fn validate_fiber_type(
     fiber_type_name: &str,
     fiber_type: &FiberTypeConfig,
     sources: &HashMap<String, SourceConfig>,
+    mode: OperationMode,
     errors: &mut Vec<String>,
 ) {
     let prefix = format!("fiber_type '{}'", fiber_type_name);
 
-    // Check that all referenced sources exist
-    for (source_name, _) in &fiber_type.sources {
-        if !sources.contains_key(source_name) {
-            errors.push(format!(
-                "{}: references non-existent source '{}'",
-                prefix, source_name
-            ));
+    // Check that all referenced sources exist (skip for parent mode, where
+    // sources refer to collector sources, not local sources)
+    if mode != OperationMode::Parent {
+        for (source_name, _) in &fiber_type.sources {
+            if !sources.contains_key(source_name) {
+                errors.push(format!(
+                    "{}: references non-existent source '{}'",
+                    prefix, source_name
+                ));
+            }
         }
     }
 
-    // Validate timestamp patterns for referenced sources
-    for (source_name, source_config) in sources {
-        if fiber_type.sources.contains_key(source_name) {
-            validate_timestamp_pattern(
-                &format!("source '{}'", source_name),
-                &source_config.timestamp.pattern,
-                errors,
-            );
+    // Validate timestamp patterns for referenced sources (skip for parent mode)
+    if mode != OperationMode::Parent {
+        for (source_name, source_config) in sources {
+            if fiber_type.sources.contains_key(source_name) {
+                validate_timestamp_pattern(
+                    &format!("source '{}'", source_name),
+                    &source_config.timestamp.pattern,
+                    errors,
+                );
+            }
         }
     }
 

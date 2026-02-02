@@ -309,8 +309,8 @@ storage:
 
 web:
   # Address to bind the web UI
-  listen: 127.0.0.1:8080
-  # Set to 0.0.0.0:8080 to allow external connections
+  listen: 127.0.0.1:7104
+  # Set to 0.0.0.0:7104 to allow external connections
 ```
 
 ### Attribute Types
@@ -487,10 +487,29 @@ Use:
 
 **If output truncation is needed**: Use tool-specific flags (like `--quiet`) or accept full output rather than piping to `head` or `tail`.
 
-**Path handling**: All path parameters in the config file support tilde expansion (`~` expands to the home directory). This applies to:
+**Path handling**: All path and string parameters in the config file support:
+- **Tilde expansion**: `~` expands to the home directory
+- **Environment variable expansion**: `$env{VAR_NAME}` expands to the value of the environment variable
+
+This applies to:
 - Source file paths
 - Storage database path
 - `--config` CLI argument
+- Any other string value in the configuration
+
+**Note**: Environment variables use `$env{VAR}` syntax to distinguish them from derived attribute interpolation, which uses `${attr}` syntax.
+
+Example:
+```yaml
+storage:
+  path: $env{TMPDIR}/noil.duckdb  # Uses system temp directory
+
+sources:
+  app_log:
+    path: $env{LOG_DIR}/app.log  # Uses custom LOG_DIR environment variable
+```
+
+If an environment variable is not set, it is left unchanged (e.g., `$env{TMPDIR}` remains as literal text).
 
 ### Checkpointing
 
@@ -513,6 +532,7 @@ Checkpoints are stored in the DuckDB database and written periodically based on 
 ## Additional Documentation
 
 - **[specs/CONFIG_SYSTEM.md](specs/CONFIG_SYSTEM.md)**: **CRITICAL for AI agents** - Comprehensive explanation of Noil's unusual configuration system: YAML-as-ground-truth, database persistence, git-style 3-way merging, and version control. **Must read before working on any config-related task.**
+- **[specs/COLLECTOR_MODE.md](specs/COLLECTOR_MODE.md)**: **Collector/Parent Architecture** - Complete specification for distributed deployments: network protocol, epoch batching, backpressure, checkpointing, failure scenarios, and implementation phases. Read this before working on collector or parent mode features.
 - **[docs/FIBER_PROCESSING.md](docs/FIBER_PROCESSING.md)**: Detailed explanation of fiber correlation semantics, the key/attribute model, session control actions, and worked examples.
 
 ## File Structure

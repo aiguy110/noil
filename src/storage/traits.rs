@@ -143,6 +143,18 @@ pub trait Storage: Send + Sync {
     /// Save a checkpoint to storage
     async fn save_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), StorageError>;
 
+    /// Load the latest collector checkpoint from storage (for collector mode)
+    async fn load_collector_checkpoint(&self) -> Result<Option<String>, StorageError>;
+
+    /// Save a collector checkpoint to storage (for collector mode)
+    async fn save_collector_checkpoint(&self, json: &str) -> Result<(), StorageError>;
+
+    /// Load the latest parent checkpoint from storage (for parent mode)
+    async fn load_parent_checkpoint(&self) -> Result<Option<String>, StorageError>;
+
+    /// Save a parent checkpoint to storage (for parent mode)
+    async fn save_parent_checkpoint(&self, json: &str) -> Result<(), StorageError>;
+
     /// Close orphaned fibers - fibers that are open in storage but not in the checkpoint.
     /// This prevents duplicate fibers after a crash where fibers were written to storage
     /// but didn't make it into the checkpoint before the crash.
@@ -218,6 +230,9 @@ pub enum StorageError {
 
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("deserialization error: {0}")]
+    Deserialization(String),
 
     #[error("DuckDB error: {0}")]
     DuckDb(#[from] duckdb::Error),

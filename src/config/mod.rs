@@ -5,10 +5,30 @@ pub mod reconcile;
 pub mod types;
 pub mod version;
 
+use regex::Regex;
 use std::path::{Path, PathBuf};
 
 pub use parse::{load_config, ConfigError};
 pub use types::{Config, WebConfig};
+
+/// Expands environment variables in a string.
+/// Supports $env{VAR_NAME} syntax.
+/// If an environment variable is not set, it's left unchanged.
+pub fn expand_env_vars(text: &str) -> String {
+    // Pattern matches $env{VAR_NAME} where VAR_NAME starts with letter or underscore,
+    // followed by alphanumeric characters or underscores
+    let re = Regex::new(r"\$env\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+
+    re.replace_all(text, |caps: &regex::Captures| {
+        let var_name = caps.get(1).unwrap().as_str();
+
+        // Try to get the environment variable
+        std::env::var(var_name).unwrap_or_else(|_| {
+            // If not set, return original match unchanged
+            caps.get(0).unwrap().as_str().to_string()
+        })
+    }).to_string()
+}
 
 /// Expands tilde (~) in paths to the user's home directory.
 /// If the path starts with "~/" or is exactly "~", replaces it with the home directory.
@@ -61,6 +81,52 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn test_expand_env_vars_single() {
+        std::env::set_var("TEST_VAR", "test_value");
+        let result = expand_env_vars("path/$env{TEST_VAR}/file");
+        assert_eq!(result, "path/test_value/file");
+        std::env::remove_var("TEST_VAR");
+    }
+
+    #[test]
+    fn test_expand_env_vars_multiple() {
+        std::env::set_var("VAR1", "value1");
+        std::env::set_var("VAR2", "value2");
+        let result = expand_env_vars("$env{VAR1}/middle/$env{VAR2}");
+        assert_eq!(result, "value1/middle/value2");
+        std::env::remove_var("VAR1");
+        std::env::remove_var("VAR2");
+    }
+
+    #[test]
+    fn test_expand_env_vars_unset() {
+        let result = expand_env_vars("path/$env{NONEXISTENT_VAR}/file");
+        // Unset variables are left unchanged
+        assert_eq!(result, "path/$env{NONEXISTENT_VAR}/file");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_expansion() {
+        let result = expand_env_vars("plain/path/without/vars");
+        assert_eq!(result, "plain/path/without/vars");
+    }
+
+    #[test]
+    fn test_expand_env_vars_partial() {
+        std::env::set_var("SET_VAR", "exists");
+        let result = expand_env_vars("$env{SET_VAR}/$env{UNSET_VAR}");
+        assert_eq!(result, "exists/$env{UNSET_VAR}");
+        std::env::remove_var("SET_VAR");
+    }
+
+    #[test]
+    fn test_expand_env_vars_ignores_derived_attributes() {
+        // ${attr} syntax should NOT be expanded as env vars
+        let result = expand_env_vars("${client_ip}:${client_port}");
+        assert_eq!(result, "${client_ip}:${client_port}");
+    }
 
     #[test]
     fn test_expand_tilde_with_path() {

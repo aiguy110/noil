@@ -1,5 +1,6 @@
 use crate::config::parse::{load_config, load_config_with_yaml};
 use crate::config::reconcile::reconcile_config_on_startup;
+use crate::config::types::OperationMode;
 #[allow(deprecated)]
 use crate::config::version::compute_config_version;
 use crate::fiber::FiberProcessor;
@@ -64,6 +65,205 @@ pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error:
 
 async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     info!(config_path = %config_path.display(), "Loading configuration");
+
+    // Load config to check mode
+    let temp_config = load_config(config_path)?;
+
+    // Dispatch based on operation mode
+    match temp_config.mode {
+        crate::config::types::OperationMode::Standalone => {
+            run_standalone_mode(config_path).await
+        }
+        crate::config::types::OperationMode::Collector => {
+            run_collector_mode(config_path).await
+        }
+        crate::config::types::OperationMode::Parent => {
+            run_parent_mode(config_path).await
+        }
+    }
+}
+
+async fn run_collector_mode(config_path: &PathBuf) -> Result<(), RunError> {
+    info!("Starting in collector mode");
+
+    // Load config
+    let (config, _config_yaml) = load_config_with_yaml(config_path)?;
+
+    // Compute config version
+    #[allow(deprecated)]
+    let config_version = compute_config_version(config_path)
+        .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
+
+    info!(config_version = config_version, "Computed config version");
+
+    // Create storage for checkpoint persistence
+    let storage_path = &config.storage.path;
+    let storage = Arc::new(
+        crate::storage::duckdb::DuckDbStorage::new(storage_path)
+            .map_err(|e| RunError::Storage(e))?
+    ) as Arc<dyn crate::storage::traits::Storage>;
+
+    // Create and run collector
+    let runner = crate::collector::runner::CollectorRunner::new(config, config_version)
+        .map_err(|e| RunError::Config(crate::config::parse::ConfigError::Validation(e.to_string())))?;
+
+    runner.run(storage).await
+        .map_err(|e| RunError::Config(crate::config::parse::ConfigError::Validation(e.to_string())))?;
+
+    Ok(())
+}
+
+async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
+    info!("Starting in parent mode");
+
+    // Load config
+    let (mut config, config_yaml) = load_config_with_yaml(config_path)?;
+
+    // Compute config version
+    #[allow(deprecated)]
+    let config_version = compute_config_version(config_path)
+        .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
+
+    info!(config_version = config_version, "Computed config version");
+
+    // Initialize storage
+    let storage_path = &config.storage.path;
+    info!(path = %storage_path.display(), "Initializing storage");
+    let storage = Arc::new(DuckDbStorage::new(storage_path)?);
+
+    // Initialize storage schema
+    storage.init_schema().await?;
+
+    // In parent mode, add auto-generated source fiber types for sources from collectors
+    // Query database for all source IDs that have sent logs
+    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+        info!("Adding auto-generated source fiber types from database");
+        let source_ids = storage.get_all_source_ids().await
+            .map_err(|e| RunError::Storage(e))?;
+
+        if !source_ids.is_empty() {
+            info!("Found {} source(s) in database: {:?}", source_ids.len(), source_ids);
+            crate::config::parse::add_auto_source_fibers_from_list(&mut config, &source_ids);
+        } else {
+            info!("No sources found in database yet");
+        }
+    }
+
+    // Create fiber processor - shared between ParentRunner and web server
+    let fiber_processor = FiberProcessor::from_config(&config, config_version)?;
+    let shared_processor = Arc::new(RwLock::new(fiber_processor));
+
+    // Create shared state for web server and hot-reload support
+    let shared_config = Arc::new(RwLock::new(config.clone()));
+    let shared_config_yaml = Arc::new(RwLock::new(config_yaml));
+    let shared_version = Arc::new(RwLock::new(config_version));
+    let shared_reprocess_state: Arc<RwLock<Option<ReprocessState>>> = Arc::new(RwLock::new(None));
+
+    // Create shutdown signal
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Start web server task
+    info!("Starting web server on {}", config.web.listen);
+    let web_storage = storage.clone();
+    let web_config = config.web.clone();
+    let web_shutdown_rx = shutdown_rx.clone();
+    let web_processor = Arc::clone(&shared_processor);
+    let web_shared_config = Arc::clone(&shared_config);
+    let web_shared_config_yaml = Arc::clone(&shared_config_yaml);
+    let web_version = Arc::clone(&shared_version);
+    let web_reprocess_state = Arc::clone(&shared_reprocess_state);
+    let web_config_path = config_path.clone();
+    let web_handle = tokio::spawn(async move {
+        run_server(
+            web_storage,
+            web_processor,
+            web_shared_config,
+            web_version,
+            web_reprocess_state,
+            web_config_path,
+            web_shared_config_yaml,
+            web_config,
+            web_shutdown_rx,
+        )
+        .await
+        .map_err(|e| RunError::WebServer(e.to_string()))
+    });
+
+    // Create and run parent in a separate task
+    let runner = crate::parent::runner::ParentRunner::new(config.clone(), config_version)
+        .map_err(|e| RunError::Config(crate::config::parse::ConfigError::Validation(e.to_string())))?;
+
+    let parent_storage = storage.clone();
+    let parent_processor = Arc::clone(&shared_processor);
+    let parent_shutdown_rx = shutdown_rx.clone();
+    let mut parent_handle = tokio::spawn(async move {
+        runner
+            .run(parent_storage, Some(parent_processor), Some(parent_shutdown_rx))
+            .await
+            .map_err(|e| RunError::Config(crate::config::parse::ConfigError::Validation(e.to_string())))
+    });
+
+    info!("Parent mode started, press Ctrl+C to shutdown");
+
+    // Wait for shutdown signal or parent completion
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Shutdown signal received");
+            let _ = shutdown_tx.send(true);
+        }
+        result = &mut parent_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("Parent runner completed successfully. Web server continues running. Press Ctrl+C to shutdown.");
+                    // Wait for Ctrl+C
+                    match signal::ctrl_c().await {
+                        Ok(()) => {
+                            info!("Shutdown signal received");
+                            let _ = shutdown_tx.send(true);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to listen for shutdown signal");
+                            let _ = shutdown_tx.send(true);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!(error = %e, "Parent runner error, shutting down");
+                    let _ = shutdown_tx.send(true);
+                }
+                Err(e) => {
+                    error!(error = %e, "Parent runner join error, shutting down");
+                    let _ = shutdown_tx.send(true);
+                }
+            }
+        }
+    }
+
+    // Wait for parent runner to finish drain/shutdown
+    match tokio::time::timeout(std::time::Duration::from_secs(10), &mut parent_handle).await {
+        Ok(Ok(Ok(()))) => info!("Parent runner stopped gracefully"),
+        Ok(Ok(Err(e))) => error!(error = %e, "Parent runner error during shutdown"),
+        Ok(Err(e)) => error!(error = %e, "Parent runner join error during shutdown"),
+        Err(_) => warn!("Parent runner shutdown timed out after 10 seconds"),
+    }
+
+    // Wait for web server with graceful shutdown timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), web_handle).await {
+        Ok(Ok(Ok(()))) => info!("Web server stopped gracefully"),
+        Ok(Ok(Err(e))) => error!(error = %e, "Web server error"),
+        Ok(Err(e)) => error!(error = %e, "Web server join error"),
+        Err(_) => {
+            warn!("Web server shutdown timed out after 5 seconds");
+        }
+    }
+
+    info!("Parent mode shutdown complete");
+
+    Ok(())
+}
+
+async fn run_standalone_mode(config_path: &PathBuf) -> Result<(), RunError> {
+    info!("Starting in standalone mode");
 
     // Initialize storage first (needed for reconciliation)
     // Note: We expand storage path from config later, but for reconciliation

@@ -1,103 +1,57 @@
 # =============================================================================
-# NOIL SAMPLE CONFIGURATION
+# NOIL PARENT MODE CONFIGURATION
 # =============================================================================
-# This configuration demonstrates all major features of Noil using sample logs
-# in the samples/logs/ directory.
+# This configuration demonstrates a parent deployment.
+# Parents pull batches from multiple collectors, perform centralized fiber
+# processing, and store results in DuckDB.
 #
-# To run with this config:
-#   cargo run -- --config samples/sample-config.yml
-#
-# Expected behavior:
-# - 3 request_trace fibers will be created (one per request across program1/2)
-# - Multiple simple_log fibers (grouped by REQUEST START...END OF REQUEST)
-# - 4 auto-generated *_all fibers (one per source: program1_all, program2_all,
-#   nginx_access_all, simple_service_all) - these provide convenient navigation
-#   starting points in the UI
-# - Logs will be correlated via MAC addresses, thread IDs, and IP addresses
+# Use case: Run a parent instance in a central location to correlate logs
+# from multiple edge collectors.
 
 # =============================================================================
-# SOURCES
+# OPERATION MODE
 # =============================================================================
 
-sources:
-  # Program 1: Frontend proxy that receives client connections
-  program1:
-    type: file
-    path: samples/logs/program1.log
-    timestamp:
-      # ISO 8601 format: [2025-01-11T10:00:00.100Z]
-      pattern: '^\[(?P<ts>[^\]]+)\]'
-      format: iso8601
-    read:
-      start: beginning
-      follow: false  # Static sample file
-
-  # Program 2: Backend service that processes requests
-  program2:
-    type: file
-    path: samples/logs/program2.log
-    timestamp:
-      pattern: '^\[(?P<ts>[^\]]+)\]'
-      format: iso8601
-    read:
-      start: beginning
-      follow: false
-
-  # Nginx access log
-  nginx_access:
-    type: file
-    path: samples/logs/nginx_access.log
-    timestamp:
-      # Common Log Format: [11/Jan/2025:10:00:00 +0000]
-      pattern: '^\[(?P<ts>[^\]]+)\]'
-      format: '%d/%b/%Y:%H:%M:%S %z'
-    read:
-      start: beginning
-      follow: false
-
-  # Simple single-threaded service
-  simple_service:
-    type: file
-    path: samples/logs/simple_service.log
-    timestamp:
-      # Format: 2025-01-11 10:00:00.000
-      pattern: '^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})'
-      format: '%Y-%m-%d %H:%M:%S%.3f'
-    read:
-      start: beginning
-      follow: false
+mode: parent
 
 # =============================================================================
-# AUTO-GENERATED SOURCE FIBERS
+# PARENT MODE CONFIGURATION
 # =============================================================================
-# By default, Noil automatically creates a fiber type for each source named
-# {source_name}_all. Each auto-generated fiber:
-#   - Collects all logs from that source
-#   - Never closes (max_gap: infinite)
-#   - Provides a convenient UI navigation starting point
-#
-# This feature is enabled by default. To disable it, uncomment:
-# auto_source_fibers: false
-#
-# You can also manually define a fiber type with the same name (e.g., nginx_all)
-# to override the auto-generated version with custom settings.
+
+parent:
+  # Collector endpoints to pull from
+  # Each collector should be running in collector mode with its HTTP API accessible
+  collectors:
+    - id: collector-node-1             # Unique identifier for this collector
+      url: http://localhost:7105
+      retry_interval: 5s          # Retry delay on connection failure
+      timeout: 30s                # HTTP request timeout
+
+  # Polling interval: how often to check collectors for new batches
+  # Lower = lower end-to-end latency, higher network overhead
+  # Higher = higher latency, lower network overhead
+  # Recommended: 1s-5s depending on latency requirements
+  poll_interval: 1s
+
+  # Backpressure handling for parent's internal pipeline
+  backpressure:
+    strategy: block
+    buffer_limit: 10000
 
 # =============================================================================
 # FIBER TYPES
 # =============================================================================
+# Define fiber correlation rules. These run on the parent after collecting
+# logs from all collectors.
 
 fiber_types:
   # Correlates requests across program1 (frontend) and program2 (backend)
-  # Demonstrates:
-  #   - Key-based matching via MAC address and thread IDs
-  #   - Derived attributes (connection strings)
-  #   - release_matching_peer_keys for thread reuse
-  #   - release_self_keys and close actions
+  # from all collector nodes
   request_trace:
     description: "Traces requests across frontend proxy and backend service"
     temporal:
       max_gap: 5s
-      gap_mode: session  # Gap measured between consecutive logs
+      gap_mode: session
 
     attributes:
       # MAC address - primary correlation key across both programs
@@ -129,7 +83,6 @@ fiber_types:
         type: int
 
       # Derived attribute - connection identifier
-      # Only defined when both client_ip and client_port are extracted
       - name: client_connection
         type: string
         derived: "${client_ip}:${client_port}"
@@ -140,6 +93,7 @@ fiber_types:
         derived: "${backend_ip}:${backend_port}"
 
     sources:
+      # Source names must match those defined in collector configs
       program1:
         patterns:
           # When a thread receives a new connection, release that thread from
@@ -162,8 +116,6 @@ fiber_types:
           - regex: 'thread-(?P<program2_thread>\d+).*MAC (?P<mac>[0-9a-fA-F:]+)'
 
           # Request completion - release thread and close fiber
-          # This allows the thread to be reused for new requests
-          # and signals the end of this request trace
           - regex: 'thread-(?P<program2_thread>\d+) Request complete'
             release_self_keys: [program2_thread]
             close: true
@@ -173,13 +125,9 @@ fiber_types:
 
       nginx_access:
         patterns:
-          - regex: '(?P<client_ip>[\d\.]+) - - "GET /api/devices HTTP/1.1"' 
+          - regex: '(?P<client_ip>[\d\.]+) - - "GET /api/devices HTTP/1.1"'
 
   # Groups consecutive log lines from the simple service
-  # Demonstrates:
-  #   - Session windowing with short gap (1s)
-  #   - Static derived attribute for grouping
-  #   - Explicit close action on pattern match
   simple_log:
     description: "Groups request sessions from single-threaded service"
     temporal:
@@ -187,8 +135,7 @@ fiber_types:
       gap_mode: session
 
     attributes:
-      # Static derived attribute (no ${} references means always defined)
-      # This ensures all logs from this source join a fiber
+      # Static derived attribute for grouping
       - name: source_marker
         type: string
         key: true
@@ -210,11 +157,11 @@ fiber_types:
 
 pipeline:
   backpressure:
-    strategy: block  # Block source readers if downstream is slow
+    strategy: block
     buffer_limit: 10000
 
   errors:
-    on_parse_error: drop  # Skip unparseable lines for demo
+    on_parse_error: drop
 
   checkpoint:
     enabled: true
@@ -231,18 +178,30 @@ sequencer:
 # =============================================================================
 # STORAGE SETTINGS
 # =============================================================================
+# Parent stores all raw logs and fiber memberships
 
 storage:
-  # Use TMPDIR environment variable for sample database
-  # Falls back to literal $env{TMPDIR} if environment variable is not set
-  path: $env{TMPDIR}/noil-sample.duckdb
-  batch_size: 100  # Small batches for quick demo feedback
-  flush_interval_seconds: 2
+  path: $env{TMPDIR}/noil-parent.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
 
 # =============================================================================
 # WEB SERVER SETTINGS
 # =============================================================================
+# The parent's web server provides the full Noil UI
 
 web:
-  listen: 127.0.0.1:7104
-  # After starting, visit http://localhost:7104 to view the UI
+  listen: 0.0.0.0:7104
+  # After starting, visit http://<parent-host>:7104 to view the UI
+  # All logs from all collectors will be visible in the UI
+
+# =============================================================================
+# UNUSED SECTIONS (Parent Mode)
+# =============================================================================
+# The following sections are ignored/should not be configured in parent mode:
+#   - sources: Parent gets logs from collectors, not files
+#   - collector: Only needed in collector mode
+#
+# Note: Do NOT configure sources in parent mode. If you need to read local
+# logs on the parent machine, run a collector instance locally and add it
+# to the collectors list.

@@ -1,4 +1,4 @@
-use axum::{routing::{get, post, put}, Router};
+use axum::{routing::{get, post, put}, Router, response::{Html, IntoResponse}, http::StatusCode};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
@@ -17,6 +17,17 @@ use super::api::{
     list_logs, list_sources, start_reprocessing, test_working_set, update_config,
     update_fiber_type, AppState,
 };
+
+/// Handler to serve index.html for frontend routes (enables client-side routing)
+async fn serve_index_html() -> impl IntoResponse {
+    let frontend_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend");
+    let index_path = frontend_dir.join("index.html");
+
+    match tokio::fs::read_to_string(index_path).await {
+        Ok(content) => Html(content).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read index.html").into_response(),
+    }
+}
 
 /// Start the web server with the given storage backend and configuration
 pub async fn run_server(
@@ -75,10 +86,18 @@ pub async fn run_server(
 
     // Serve static frontend files
     let frontend_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend");
-    let serve_dir = ServeDir::new(frontend_dir);
+    let serve_dir = ServeDir::new(frontend_dir.clone());
 
-    // Combine routes: API first, then static files
-    let app = api_routes.fallback_service(serve_dir);
+    // Frontend routes that should serve index.html (for client-side routing)
+    let frontend_routes = Router::new()
+        .route("/", get(serve_index_html))
+        .route("/viewer", get(serve_index_html))
+        .route("/fiber-rules", get(serve_index_html));
+
+    // Combine routes: API first, then frontend routes, then static files
+    let app = api_routes
+        .merge(frontend_routes)
+        .fallback_service(serve_dir);
 
     let listener = tokio::net::TcpListener::bind(&web_config.listen).await?;
     tracing::info!("Web server listening on {}", web_config.listen);

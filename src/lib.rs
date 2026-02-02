@@ -7,3 +7,5 @@ pub mod storage;
 pub mod pipeline;
 pub mod web;
 pub mod reprocessing;
+pub mod collector;
+pub mod parent;

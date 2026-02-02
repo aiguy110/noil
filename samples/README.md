@@ -1,8 +1,14 @@
-# Noil Sample Logs and Configuration
+# Noil Sample Configurations
 
-This directory contains sample log files and a configuration that demonstrates all major features of Noil.
+This directory contains sample configurations and log files that demonstrate Noil's features.
 
-## Quick Start
+## Available Configurations
+
+### 1. Standalone Mode (sample-config.yml)
+
+Full-featured single-instance deployment with sources, fiber processing, and web UI.
+
+**Use case**: Single machine deployment, all logs on local filesystem.
 
 ```bash
 # From the project root
@@ -12,7 +18,83 @@ cargo run -- --config samples/sample-config.yml
 noil --config samples/sample-config.yml
 ```
 
-After starting, the web UI will be available at http://localhost:8080
+After starting, the web UI will be available at http://localhost:7104
+
+### 2. Collector Mode (collector-config.yml)
+
+Lightweight deployment for edge nodes that read local logs and serve batches to a parent.
+
+**Use case**: Deploy on remote machines where logs are generated.
+
+```bash
+noil --config samples/collector-config.yml
+```
+
+The collector's status UI will be available at http://<collector-host>:7105
+
+**Key features**:
+- Minimal resource usage (no fiber processing, no full database)
+- HTTP API for parent to pull batches
+- Local buffering for network resilience
+- Checkpoint-based crash recovery
+
+### 3. Parent Mode (parent-config.yml)
+
+Central instance that pulls from multiple collectors, performs fiber processing, and provides full UI.
+
+**Use case**: Deploy in a central location to correlate logs from multiple edge nodes.
+
+```bash
+noil --config samples/parent-config.yml
+```
+
+The parent's web UI will be available at http://<parent-host>:7104
+
+**Key features**:
+- Pulls from multiple collectors via HTTP
+- Hierarchical sequencing with watermark-based coordination
+- Full fiber processing and correlation
+- DuckDB storage for all logs and fibers
+- Complete web UI for exploration
+
+## Deployment Architectures
+
+### Single Machine (Standalone Mode)
+
+```
+┌──────────────────────────────┐
+│   Noil Standalone Instance   │
+│                              │
+│  • Local log sources         │
+│  • Fiber processing          │
+│  • DuckDB storage            │
+│  • Web UI                    │
+└──────────────────────────────┘
+```
+
+Use `sample-config.yml`
+
+### Distributed Deployment (Collector + Parent)
+
+```
+      ┌─────────────────────────────────┐
+      │    Parent Instance (Central)    │
+      │  • Fiber processing             │
+      │  • DuckDB storage               │
+      │  • Web UI                       │
+      └──▲─────────────▲────────────▲──┘
+         │             │            │
+         │  HTTP Pull  │  HTTP Pull │  HTTP Pull
+         │             │            │
+    ┌────┴─────┐  ┌───┴──────┐  ┌─┴──────────┐
+    │Collector1│  │Collector2│  │Collector3  │
+    │Edge Node │  │Edge Node │  │Edge Node   │
+    └──────────┘  └──────────┘  └────────────┘
+```
+
+Use `collector-config.yml` on edge nodes, `parent-config.yml` centrally.
+
+## Quick Start
 
 ## Sample Log Files
 
@@ -159,7 +241,7 @@ When program1 thread-1 log matches MAC aa:bb:cc:11:22:33, and program2 thread-5 
 
 After running Noil with this config:
 
-1. **View fibers in the web UI** at http://localhost:8080
+1. **View fibers in the web UI** at http://localhost:7104
 2. **Query the database** directly:
    ```bash
    sqlite3 /tmp/noil-sample.duckdb

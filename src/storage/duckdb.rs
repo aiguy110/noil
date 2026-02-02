@@ -199,6 +199,28 @@ impl Storage for DuckDbStorage {
                 [],
             )?;
 
+            // Create collector_checkpoints table (for collector mode)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS collector_checkpoints (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    checkpoint_data TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    CHECK (id = 1)
+                )",
+                [],
+            )?;
+
+            // Create parent_checkpoints table (for parent mode)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS parent_checkpoints (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    checkpoint_data TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    CHECK (id = 1)
+                )",
+                [],
+            )?;
+
             // Create config_versions table
             // Note: DuckDB has known limitations with self-referential foreign keys.
             // We're removing the FK constraint and will enforce parent_hash integrity
@@ -260,7 +282,7 @@ impl Storage for DuckDbStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "INSERT INTO raw_logs (log_id, timestamp, source_id, raw_text, ingestion_time, config_version)
+                "INSERT OR IGNORE INTO raw_logs (log_id, timestamp, source_id, raw_text, ingestion_time, config_version)
                  VALUES (?, to_timestamp(? / 1000000.0), ?, ?, to_timestamp(? / 1000000.0), ?)",
             )?;
 
@@ -566,7 +588,7 @@ impl Storage for DuckDbStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "INSERT INTO fiber_memberships (log_id, fiber_id, config_version)
+                "INSERT OR IGNORE INTO fiber_memberships (log_id, fiber_id, config_version)
                  VALUES (?, ?, ?)",
             )?;
 
@@ -1359,6 +1381,90 @@ impl Storage for DuckDbStorage {
                     version_hash
                 )));
             }
+
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn load_collector_checkpoint(&self) -> Result<Option<String>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT checkpoint_data FROM collector_checkpoints WHERE id = 1",
+            )?;
+
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let checkpoint_json: String = row.get(0)?;
+                Ok(Some(checkpoint_json))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn save_collector_checkpoint(&self, json: &str) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let json = json.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = Utc::now();
+
+            conn.execute(
+                "INSERT OR REPLACE INTO collector_checkpoints (id, checkpoint_data, created_at)
+                 VALUES (1, ?, to_timestamp(? / 1000000.0))",
+                duckdb::params![json, now.timestamp_micros()],
+            )?;
+
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn load_parent_checkpoint(&self) -> Result<Option<String>, StorageError> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT checkpoint_data FROM parent_checkpoints WHERE id = 1",
+            )?;
+
+            let mut rows = stmt.query([])?;
+
+            if let Some(row) = rows.next()? {
+                let checkpoint_json: String = row.get(0)?;
+                Ok(Some(checkpoint_json))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn save_parent_checkpoint(&self, json: &str) -> Result<(), StorageError> {
+        let conn = self.conn.clone();
+        let json = json.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = Utc::now();
+
+            conn.execute(
+                "INSERT OR REPLACE INTO parent_checkpoints (id, checkpoint_data, created_at)
+                 VALUES (1, ?, to_timestamp(? / 1000000.0))",
+                duckdb::params![json, now.timestamp_micros()],
+            )?;
 
             Ok::<(), StorageError>(())
         })

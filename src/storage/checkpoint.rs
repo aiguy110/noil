@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const CURRENT_VERSION: u32 = 1;
+const COLLECTOR_CHECKPOINT_VERSION: u32 = 1;
+const PARENT_CHECKPOINT_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckpointError {
@@ -74,6 +76,69 @@ pub struct OpenFiberCheckpoint {
     pub log_ids: Vec<Uuid>,
 }
 
+/// Collector mode checkpoint structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorCheckpoint {
+    pub version: u32,
+    pub timestamp: DateTime<Utc>,
+    pub config_version: u64,
+    pub collector_id: String,
+
+    // Existing checkpoint data
+    pub sources: HashMap<String, SourceCheckpoint>,
+    pub sequencer: SequencerCheckpoint,
+
+    // Collector-specific state
+    pub epoch_batcher: EpochBatcherCheckpoint,
+    pub batch_buffer: BatchBufferCheckpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochBatcherCheckpoint {
+    pub sequence_counter: u64,
+    pub rewind_generation: u64,
+    pub current_epoch: Option<EpochBuilderCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochBuilderCheckpoint {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub log_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchBufferCheckpoint {
+    pub oldest_sequence: u64,
+    pub newest_sequence: u64,
+    pub unacknowledged_count: usize,
+}
+
+/// Parent mode checkpoint structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParentCheckpoint {
+    pub version: u32,
+    pub timestamp: DateTime<Utc>,
+    pub config_version: u64,
+
+    // Collector stream states
+    pub collectors: HashMap<String, CollectorSequencerCheckpoint>,
+
+    // Hierarchical sequencer state
+    pub sequencer: SequencerCheckpoint,
+
+    // Fiber processor state (same as standalone)
+    pub fiber_processors: HashMap<String, FiberProcessorCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorSequencerCheckpoint {
+    pub collector_id: String,
+    pub last_sequence: u64,
+    pub last_acknowledged_sequence: u64,
+    pub watermark: Option<DateTime<Utc>>,
+}
+
 pub struct CheckpointManager {
     storage: Arc<dyn Storage>,
     interval: Duration,
@@ -129,6 +194,90 @@ impl CheckpointManager {
 
     pub fn reset_timer(&mut self) {
         self.last_save = Instant::now();
+    }
+
+    /// Save collector checkpoint
+    pub async fn save_collector(&mut self, checkpoint: &CollectorCheckpoint) -> Result<()> {
+        let json = serde_json::to_string(checkpoint)
+            .map_err(|e| CheckpointError::Storage(StorageError::Serialization(e)))?;
+
+        self.storage.save_collector_checkpoint(&json).await?;
+        self.last_save = Instant::now();
+        tracing::debug!("Collector checkpoint saved to storage");
+        Ok(())
+    }
+
+    /// Load collector checkpoint
+    pub async fn load_collector(&self) -> Result<Option<CollectorCheckpoint>> {
+        tracing::info!("Loading collector checkpoint from storage");
+
+        let checkpoint_opt = self.storage.load_collector_checkpoint().await?;
+
+        if let Some(json) = checkpoint_opt {
+            let checkpoint: CollectorCheckpoint = serde_json::from_str(&json)
+                .map_err(|e| CheckpointError::Storage(StorageError::Deserialization(e.to_string())))?;
+
+            if checkpoint.version != COLLECTOR_CHECKPOINT_VERSION {
+                tracing::warn!(
+                    "Collector checkpoint version mismatch: {} vs {}, ignoring checkpoint",
+                    checkpoint.version,
+                    COLLECTOR_CHECKPOINT_VERSION
+                );
+                return Ok(None);
+            }
+
+            tracing::info!(
+                "Loaded collector checkpoint from {} with config version {}",
+                checkpoint.timestamp,
+                checkpoint.config_version
+            );
+            Ok(Some(checkpoint))
+        } else {
+            tracing::info!("No collector checkpoint found in storage");
+            Ok(None)
+        }
+    }
+
+    /// Save parent checkpoint
+    pub async fn save_parent(&mut self, checkpoint: &ParentCheckpoint) -> Result<()> {
+        let json = serde_json::to_string(checkpoint)
+            .map_err(|e| CheckpointError::Storage(StorageError::Serialization(e)))?;
+
+        self.storage.save_parent_checkpoint(&json).await?;
+        self.last_save = Instant::now();
+        tracing::debug!("Parent checkpoint saved to storage");
+        Ok(())
+    }
+
+    /// Load parent checkpoint
+    pub async fn load_parent(&self) -> Result<Option<ParentCheckpoint>> {
+        tracing::info!("Loading parent checkpoint from storage");
+
+        let checkpoint_opt = self.storage.load_parent_checkpoint().await?;
+
+        if let Some(json) = checkpoint_opt {
+            let checkpoint: ParentCheckpoint = serde_json::from_str(&json)
+                .map_err(|e| CheckpointError::Storage(StorageError::Deserialization(e.to_string())))?;
+
+            if checkpoint.version != PARENT_CHECKPOINT_VERSION {
+                tracing::warn!(
+                    "Parent checkpoint version mismatch: {} vs {}, ignoring checkpoint",
+                    checkpoint.version,
+                    PARENT_CHECKPOINT_VERSION
+                );
+                return Ok(None);
+            }
+
+            tracing::info!(
+                "Loaded parent checkpoint from {} with config version {}",
+                checkpoint.timestamp,
+                checkpoint.config_version
+            );
+            Ok(Some(checkpoint))
+        } else {
+            tracing::info!("No parent checkpoint found in storage");
+            Ok(None)
+        }
     }
 }
 

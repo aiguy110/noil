@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::config::diff::create_diff_with_context;
-use crate::config::types::{Config, FiberTypeConfig};
+use crate::config::types::{Config, FiberTypeConfig, OperationMode};
 use crate::config::version::compute_config_hash;
 use crate::fiber::processor::FiberProcessor;
 use crate::reprocessing::{ReprocessProgress, ReprocessState, ReprocessStatus};
@@ -492,21 +492,37 @@ pub async fn get_fiber_logs(
 pub async fn list_fiber_types(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<FiberTypeMetadata>>, ApiError> {
-    let types = state.storage.get_all_fiber_types().await?;
-    let metadata: Vec<FiberTypeMetadata> = types
-        .into_iter()
-        .map(|name| {
-            let is_source_fiber = state
-                .fiber_types
-                .get(&name)
-                .map(|ft| ft.is_source_fiber)
-                .unwrap_or(false);
-            FiberTypeMetadata {
-                name,
-                is_source_fiber,
-            }
+    // Return fiber types from configuration, not from storage
+    // This ensures fiber types are visible even before any fibers are created
+    let config = state.config.read().await;
+    let mut metadata: Vec<FiberTypeMetadata> = config
+        .fiber_types
+        .iter()
+        .map(|(name, ft)| FiberTypeMetadata {
+            name: name.clone(),
+            is_source_fiber: ft.is_source_fiber,
         })
         .collect();
+
+    // In parent mode (or when auto_source_fibers is enabled),
+    // also include source fiber types for all sources that have sent logs.
+    // This ensures that source fibers from collectors are visible in the UI,
+    // even if they're not explicitly defined in the parent config.
+    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+        // Get all unique source IDs from the database
+        let source_ids = state.storage.get_all_source_ids().await?;
+
+        // Create synthetic source fiber metadata for sources not already in config
+        for source_id in source_ids {
+            if !config.fiber_types.contains_key(&source_id) {
+                metadata.push(FiberTypeMetadata {
+                    name: source_id,
+                    is_source_fiber: true,
+                });
+            }
+        }
+    }
+
     Ok(Json(metadata))
 }
 
@@ -1407,6 +1423,9 @@ pub async fn test_working_set(
     temp_fiber_types.insert(fiber_type_name.clone(), fiber_type_config);
 
     let temp_config = Config {
+        mode: state.config.read().await.mode,
+        collector: None,
+        parent: None,
         sources: HashMap::new(), // Not needed for test processing
         fiber_types: temp_fiber_types,
         auto_source_fibers: false,
@@ -1536,7 +1555,7 @@ fn update_fiber_type_in_yaml(yaml: &str, name: &str, new_fiber_yaml: &str) -> Re
     let mut in_fiber_types = false;
     let mut in_target_fiber = false;
     let mut found_target = false;
-    let mut fiber_indent = 0;
+    let mut fiber_indent;
 
     while i < lines.len() {
         let line = lines[i];
@@ -1672,7 +1691,7 @@ fn add_fiber_type_to_yaml(yaml: &str, _name: &str, fiber_yaml: &str) -> Result<S
     let mut result = Vec::new();
     let mut i = 0;
     let mut found_fiber_types = false;
-    let mut fiber_types_indent = 0;
+    let mut fiber_types_indent;
 
     while i < lines.len() {
         let line = lines[i];
