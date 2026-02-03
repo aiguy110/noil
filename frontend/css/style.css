@@ -809,6 +809,7 @@ body {
 
 .log-viewer {
     flex: 1;
+    overflow-x: auto;
     overflow-y: auto;
     background-color: var(--bg-primary);
     position: relative;
@@ -825,8 +826,7 @@ body {
 .log-line {
     padding: 4px 10px;
     padding-left: 13px; /* 10px + 3px for the strip */
-    white-space: pre-wrap;
-    word-break: break-all;
+    white-space: pre;
     transition: background-color 0.1s;
     position: relative;
 }
@@ -1258,8 +1258,9 @@ body {
 /* Working Set Indicator */
 .working-set-indicator {
     position: absolute;
-    top: 4px;
+    top: 50%;
     right: 4px;
+    transform: translateY(-50%);
     color: var(--accent-color);
     font-size: 16px;
     text-shadow: 0 0 4px rgba(0, 122, 204, 0.8);
@@ -1270,11 +1271,11 @@ body {
 @keyframes starPulse {
     0%, 100% {
         opacity: 1;
-        transform: scale(1);
+        transform: translateY(-50%) scale(1);
     }
     50% {
         opacity: 0.7;
-        transform: scale(1.1);
+        transform: translateY(-50%) scale(1.1);
     }
 }
 
@@ -2213,10 +2214,18 @@ body {
 
 .working-set-content {
     flex: 1;
+    overflow-x: auto;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+.working-set-content.raw-mode {
+    gap: 0;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .working-set-empty {
@@ -2270,6 +2279,89 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     margin: 4px 0;
+}
+
+/* Raw mode styling for Working Set */
+.working-set-raw-item {
+    display: flex;
+    align-items: center;
+    min-width: 100%;
+    width: max-content;
+}
+
+.working-set-raw-item .working-set-raw-remove {
+    position: sticky;
+    right: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
+    background: var(--bg-secondary);
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.2s, background-color 0.2s;
+}
+
+.working-set-raw-item:hover .working-set-raw-remove {
+    opacity: 1;
+}
+
+.working-set-raw-remove:hover {
+    background-color: #e74c3c;
+    color: white;
+}
+
+/* View mode switch */
+.working-set-view-switch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.working-set-view-switch .switch-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.working-set-view-switch input {
+    display: none;
+}
+
+.working-set-view-switch .switch-slider {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    background-color: var(--bg-tertiary);
+    border-radius: 9px;
+    transition: background-color 0.2s;
+    border: 1px solid var(--border-color);
+}
+
+.working-set-view-switch .switch-slider::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    background-color: var(--text-secondary);
+    border-radius: 50%;
+    transition: transform 0.2s, background-color 0.2s;
+}
+
+.working-set-view-switch input:checked + .switch-slider {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+.working-set-view-switch input:checked + .switch-slider::before {
+    transform: translateX(14px);
+    background-color: white;
 }
 
 .working-set-log-fibers {

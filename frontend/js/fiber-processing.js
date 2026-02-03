@@ -15,6 +15,7 @@ class FiberProcessingEditor {
         this.editableCompartment = null; // Compartment for dynamic reconfiguration
         this.currentConfigVersion = null; // Current active config version
         this.selectedVersionHash = null; // Selected version in history modal
+        this.workingSetViewMode = 'pretty'; // 'pretty' or 'raw'
         this.elementIds = {
             typeListEl: 'fiber-type-list',
             typeNameEl: 'fiber-type-name',
@@ -923,6 +924,7 @@ sources:
         // Get working set panel elements
         const clearBtn = document.getElementById('working-set-clear');
         const testBtn = document.getElementById('working-set-test');
+        const viewToggleBtn = document.getElementById('working-set-view-toggle');
 
         if (clearBtn) {
             clearBtn.addEventListener('click', () => {
@@ -938,6 +940,13 @@ sources:
             });
         }
 
+        if (viewToggleBtn) {
+            viewToggleBtn.addEventListener('change', () => {
+                this.workingSetViewMode = viewToggleBtn.checked ? 'raw' : 'pretty';
+                this.renderWorkingSetPanel();
+            });
+        }
+
         // Initial render
         this.renderWorkingSetPanel();
     }
@@ -947,6 +956,9 @@ sources:
         const contentEl = document.getElementById('working-set-content');
 
         if (!window.app || !countEl || !contentEl) return;
+
+        // Toggle raw mode class on container
+        contentEl.classList.toggle('raw-mode', this.workingSetViewMode === 'raw');
 
         const workingSet = window.app.getWorkingSet();
         const logIds = workingSet.logIds;
@@ -1025,7 +1037,6 @@ sources:
 
     createWorkingSetLogItem(log, fibers) {
         const item = document.createElement('div');
-        item.className = 'working-set-log-item';
         item.setAttribute('data-log-id', log.id);
 
         // Format timestamp
@@ -1039,55 +1050,104 @@ sources:
         const ms = String(timestamp.getMilliseconds()).padStart(3, '0');
         const timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
 
-        // Source badge color
-        const sourceBadgeColor = colorManager.getFiberTypeColor(log.source_id);
+        // Source color
+        const sourceColor = colorManager.getFiberTypeColor(log.source_id);
 
-        // Truncate log text
-        const truncatedText = log.raw_text.length > 50
-            ? log.raw_text.substring(0, 50) + '...'
-            : log.raw_text;
+        if (this.workingSetViewMode === 'raw') {
+            // Raw mode: exact same structure as Log View
+            item.className = 'log-line working-set-raw-item';
+            item.style.backgroundColor = this.adjustColorOpacity(sourceColor, 0.15);
+            item.style.setProperty('--log-line-color', sourceColor);
 
-        // Build fiber badges
-        let fiberBadgesHtml = '';
-        if (fibers && fibers.length > 0) {
-            fiberBadgesHtml = '<div class="working-set-log-fibers">';
-            fibers.forEach(fiber => {
-                const fiberColor = colorManager.getFiberTypeColor(fiber.fiber_type);
-                fiberBadgesHtml += `
-                    <span class="working-set-fiber-badge" style="background-color: ${fiberColor};">
-                        ${this.escapeHtml(fiber.fiber_type)}
-                    </span>
-                `;
-            });
-            fiberBadgesHtml += '</div>';
-        }
+            const timestampSpan = document.createElement('span');
+            timestampSpan.className = 'timestamp';
+            timestampSpan.textContent = timeStr;
 
-        item.innerHTML = `
-            <div class="working-set-log-timestamp">
-                ${timeStr}
-                <span class="working-set-log-source" style="background-color: ${sourceBadgeColor};">
-                    ${this.escapeHtml(log.source_id)}
-                </span>
-            </div>
-            <div class="working-set-log-text" title="${this.escapeHtml(log.raw_text)}">
-                ${this.escapeHtml(truncatedText)}
-            </div>
-            ${fiberBadgesHtml}
-            <button class="working-set-log-remove" title="Remove from working set">&times;</button>
-        `;
+            const sourceSpan = document.createElement('span');
+            sourceSpan.className = 'source';
+            sourceSpan.textContent = `[${log.source_id}]`;
 
-        // Add remove button handler
-        const removeBtn = item.querySelector('.working-set-log-remove');
-        if (removeBtn) {
+            const textSpan = document.createElement('span');
+            textSpan.textContent = log.raw_text;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'working-set-raw-remove';
+            removeBtn.title = 'Remove from working set';
+            removeBtn.textContent = '\u00d7';
             removeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (window.app) {
                     window.app.removeFromWorkingSet(log.id);
                 }
             });
+
+            item.appendChild(timestampSpan);
+            item.appendChild(sourceSpan);
+            item.appendChild(textSpan);
+            item.appendChild(removeBtn);
+        } else {
+            // Pretty mode: card layout with truncated text
+            item.className = 'working-set-log-item';
+
+            // Build fiber badges
+            let fiberBadgesHtml = '';
+            if (fibers && fibers.length > 0) {
+                fiberBadgesHtml = '<div class="working-set-log-fibers">';
+                fibers.forEach(fiber => {
+                    const fiberColor = colorManager.getFiberTypeColor(fiber.fiber_type);
+                    fiberBadgesHtml += `
+                        <span class="working-set-fiber-badge" style="background-color: ${fiberColor};">
+                            ${this.escapeHtml(fiber.fiber_type)}
+                        </span>
+                    `;
+                });
+                fiberBadgesHtml += '</div>';
+            }
+
+            const truncatedText = log.raw_text.length > 50
+                ? log.raw_text.substring(0, 50) + '...'
+                : log.raw_text;
+
+            item.innerHTML = `
+                <div class="working-set-log-timestamp">
+                    ${timeStr}
+                    <span class="working-set-log-source" style="background-color: ${sourceColor};">
+                        ${this.escapeHtml(log.source_id)}
+                    </span>
+                </div>
+                <div class="working-set-log-text" title="${this.escapeHtml(log.raw_text)}">
+                    ${this.escapeHtml(truncatedText)}
+                </div>
+                ${fiberBadgesHtml}
+                <button class="working-set-log-remove" title="Remove from working set">&times;</button>
+            `;
+
+            // Add remove button handler
+            const removeBtn = item.querySelector('.working-set-log-remove');
+            if (removeBtn) {
+                removeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (window.app) {
+                        window.app.removeFromWorkingSet(log.id);
+                    }
+                });
+            }
         }
 
         return item;
+    }
+
+    adjustColorOpacity(color, opacity) {
+        // Convert color to rgba with specified opacity
+        if (color.startsWith('#')) {
+            const r = parseInt(color.slice(1, 3), 16);
+            const g = parseInt(color.slice(3, 5), 16);
+            const b = parseInt(color.slice(5, 7), 16);
+            return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+        } else if (color.startsWith('hsl')) {
+            return color.replace('hsl', 'hsla').replace(')', `, ${opacity})`);
+        }
+        return color;
     }
 
     async testWorkingSet() {
