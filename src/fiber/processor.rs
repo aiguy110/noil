@@ -589,6 +589,46 @@ impl FiberProcessor {
             }
         }
     }
+
+    /// Check if a processor exists for the given source ID
+    pub fn has_processor_for_source(&self, source_id: &str) -> bool {
+        self.processors.values().any(|p| {
+            p.fiber_type.source_patterns.contains_key(source_id)
+        })
+    }
+
+    /// Dynamically add an auto-generated source fiber type processor.
+    /// This is used in parent mode when encountering logs from a previously-unseen source.
+    /// Returns true if a new processor was added, false if one already existed.
+    ///
+    /// Note: We only check if a source fiber processor already exists (keyed by source_id).
+    /// We intentionally do NOT check `has_processor_for_source` because traced fiber types
+    /// may handle the same source, and source fibers should be created independently of
+    /// traced fibers to provide a "all logs from source" view.
+    pub fn add_source_fiber_type(&mut self, source_id: &str, config_version: u64) -> Result<bool, RuleError> {
+        // Check if we already have a source fiber processor for this source
+        if self.processors.contains_key(source_id) {
+            return Ok(false);
+        }
+
+        // Create auto-source fiber type config
+        let fiber_config = crate::config::parse::create_auto_source_fiber_config(source_id);
+        let compiled = CompiledFiberType::from_config(source_id, &fiber_config)?;
+        let processor = FiberTypeProcessor::new(compiled, config_version);
+
+        tracing::info!(
+            source_id = %source_id,
+            "Dynamically added source fiber type processor"
+        );
+
+        self.processors.insert(source_id.to_string(), processor);
+        Ok(true)
+    }
+
+    /// Get a list of all fiber type names
+    pub fn fiber_type_names(&self) -> Vec<String> {
+        self.processors.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

@@ -546,18 +546,6 @@ class FiberProcessingEditor {
             return;
         }
 
-        // Confirm activation
-        const confirmed = confirm(
-            'Activate will:\n' +
-            '- Close all open fibers of this type\n' +
-            '- Apply new rules to incoming logs\n\n' +
-            'Existing fiber data will NOT be reprocessed.\n' +
-            'Use "Reprocess" to apply changes to historical logs.\n\n' +
-            'Continue?'
-        );
-
-        if (!confirmed) return;
-
         try {
             this.showStatus('Activating...', 'info');
             await this.api.activateFiberType(this.selectedType);
@@ -746,6 +734,10 @@ sources:
             const result = await this.api.startReprocessing(options);
 
             this.showStatus('Reprocessing started', 'success');
+
+            if (window.app && typeof window.app.invalidateFiberCache === 'function') {
+                window.app.invalidateFiberCache();
+            }
 
             // Show progress UI
             this.elements.reprocessProgress.style.display = 'block';
@@ -976,27 +968,58 @@ sources:
         // Render log items
         contentEl.innerHTML = '';
 
-        for (const logId of logIds) {
+        const batchSize = 100;
+        const logIdList = logIds.slice();
+        const logsById = {};
+        const fibersByLogId = {};
+        const missingIds = new Set();
+
+        for (let i = 0; i < logIdList.length; i += batchSize) {
+            const batch = logIdList.slice(i, i + batchSize);
             try {
-                // Fetch log details if not in cache
-                let log = workingSet.logs[logId];
-                if (!log) {
-                    log = await this.api.getLog(logId);
-                    workingSet.logs[logId] = log;
+                const response = await this.api.getLogsBatch(batch, { includeFiberMembership: true });
+                (response.logs || []).forEach((log) => {
+                    logsById[log.id] = log;
+                    workingSet.logs[log.id] = log;
+                });
+                if (response.fiber_memberships) {
+                    Object.entries(response.fiber_memberships).forEach(([logId, fibers]) => {
+                        fibersByLogId[logId] = fibers;
+                    });
                 }
-
-                // Fetch fiber memberships
-                let fiberData = await this.api.getLogFibers(logId);
-
-                const logItem = this.createWorkingSetLogItem(log, fiberData.fibers);
-                contentEl.appendChild(logItem);
+                (response.missing_log_ids || []).forEach((logId) => {
+                    missingIds.add(logId);
+                });
             } catch (error) {
-                console.error(`Failed to fetch log ${logId}:`, error);
-                // Remove from working set if it doesn't exist
-                if (error.message.includes('404')) {
-                    window.app.removeFromWorkingSet(logId);
-                }
+                console.error('Failed to fetch working set batch:', error);
             }
+        }
+
+        if (missingIds.size > 0) {
+            missingIds.forEach((logId) => {
+                window.app.removeFromWorkingSet(logId);
+            });
+            return;
+        }
+
+        if (workingSet.logIds.length === 0) {
+            contentEl.innerHTML = `
+                <div class="working-set-empty">
+                    <p>No logs in working set.</p>
+                    <p>Right-click logs in the Log View to add them.</p>
+                </div>
+            `;
+            return;
+        }
+
+        for (const logId of workingSet.logIds) {
+            const log = logsById[logId] || workingSet.logs[logId];
+            if (!log) {
+                continue;
+            }
+            const fibers = fibersByLogId[logId] || [];
+            const logItem = this.createWorkingSetLogItem(log, fibers);
+            contentEl.appendChild(logItem);
         }
     }
 
@@ -1116,12 +1139,7 @@ sources:
 
             this.showStatus('Test complete', 'success');
         } catch (error) {
-            // Check if backend endpoint is not implemented yet
-            if (error.message.includes('404') || error.message.includes('not found')) {
-                this.showStatus('Backend API not yet implemented. Please implement the test-working-set endpoint first.', 'info');
-            } else {
-                this.showStatus(`Test failed: ${error.message}`, 'error');
-            }
+            this.showStatus(`Test failed: ${error.message}`, 'error');
             console.error('Failed to test working set:', error);
         }
     }

@@ -88,6 +88,9 @@ pub trait Storage: Send + Sync {
     /// Get a single log by ID
     async fn get_log(&self, log_id: Uuid) -> Result<Option<StoredLog>, StorageError>;
 
+    /// Get multiple logs by ID
+    async fn get_logs_by_ids(&self, log_ids: &[Uuid]) -> Result<Vec<StoredLog>, StorageError>;
+
     /// Query logs within a time range with pagination
     async fn query_logs_by_time(
         &self,

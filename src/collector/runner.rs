@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Error)]
 pub enum CollectorError {
@@ -131,21 +131,71 @@ impl CollectorRunner {
             self.collector_config.buffer.strategy,
         )));
 
-        // Create source readers
+        // Create source readers with checkpoint restoration
         let mut readers = Vec::new();
         let source_states: Arc<RwLock<HashMap<String, Arc<Mutex<SourceState>>>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
+        // Shared state for source checkpointing (offset, inode, timestamp)
+        let source_checkpoint_states: Arc<RwLock<HashMap<String, crate::storage::checkpoint::SharedSourceState>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
         for (source_id, source_config) in &self.config.sources {
-            info!(source_id = %source_id, path = %source_config.path.display(), "Creating source reader");
+            // Check if we have a checkpoint for this source
+            let checkpoint_offset = checkpoint_opt
+                .as_ref()
+                .and_then(|cp| cp.sources.get(source_id))
+                .map(|src_cp| src_cp.offset);
 
-            let reader = SourceReader::new(
-                source_id.clone(),
-                source_config,
-                self.config.pipeline.errors.on_parse_error,
-            )?;
+            let reader = if let Some(offset) = checkpoint_offset {
+                if offset > 0 {
+                    info!(
+                        source_id = %source_id,
+                        path = %source_config.path.display(),
+                        offset = offset,
+                        "Creating source reader from checkpoint offset"
+                    );
+                    SourceReader::new_with_offset(
+                        source_id.clone(),
+                        source_config,
+                        self.config.pipeline.errors.on_parse_error,
+                        offset,
+                    )?
+                } else {
+                    info!(
+                        source_id = %source_id,
+                        path = %source_config.path.display(),
+                        "Creating source reader (checkpoint offset is 0)"
+                    );
+                    SourceReader::new(
+                        source_id.clone(),
+                        source_config,
+                        self.config.pipeline.errors.on_parse_error,
+                    )?
+                }
+            } else {
+                info!(
+                    source_id = %source_id,
+                    path = %source_config.path.display(),
+                    "Creating source reader (no checkpoint)"
+                );
+                SourceReader::new(
+                    source_id.clone(),
+                    source_config,
+                    self.config.pipeline.errors.on_parse_error,
+                )?
+            };
 
-            // Create shared state for this source
+            // Wrap reader with shared state for checkpoint tracking
+            let (reader, shared_state) = reader.with_shared_state();
+
+            // Store the shared state for checkpoint task
+            source_checkpoint_states
+                .write()
+                .await
+                .insert(source_id.clone(), shared_state);
+
+            // Create watermark state for this source (used for API status)
             let state = Arc::new(Mutex::new(SourceState {
                 watermark: None,
                 active: true,
@@ -264,15 +314,15 @@ impl CollectorRunner {
         if self.collector_config.checkpoint.enabled {
             let checkpoint_batcher = Arc::clone(&batcher);
             let checkpoint_buffer = Arc::clone(&buffer);
-            let checkpoint_config = self.config.clone();
             let checkpoint_collector_id = collector_id.clone();
             let checkpoint_config_version = self.config_version;
+            let checkpoint_source_states = Arc::clone(&source_checkpoint_states);
             tokio::spawn(async move {
                 run_checkpoint_task(
                     checkpoint_manager,
                     checkpoint_batcher,
                     checkpoint_buffer,
-                    checkpoint_config,
+                    checkpoint_source_states,
                     checkpoint_collector_id,
                     checkpoint_config_version,
                 )
@@ -464,7 +514,7 @@ async fn run_checkpoint_task(
     mut manager: CheckpointManager,
     batcher: Arc<Mutex<EpochBatcher>>,
     buffer: Arc<Mutex<BatchBuffer>>,
-    config: Config,
+    source_checkpoint_states: Arc<RwLock<HashMap<String, crate::storage::checkpoint::SharedSourceState>>>,
     collector_id: String,
     config_version: u64,
 ) {
@@ -475,25 +525,37 @@ async fn run_checkpoint_task(
             continue;
         }
 
-        // Build checkpoint
+        // Build source checkpoints from shared state (must be done first to avoid
+        // holding sync mutex guards across the async boundary)
+        let sources = {
+            let states = source_checkpoint_states.read().await;
+            let mut sources = HashMap::new();
+            for (source_id, shared_state) in states.iter() {
+                if let Ok(state) = shared_state.lock() {
+                    sources.insert(
+                        source_id.clone(),
+                        SourceCheckpoint {
+                            path: std::path::PathBuf::new(), // Path not needed for restore
+                            offset: state.offset,
+                            inode: state.inode,
+                            last_timestamp: state.last_timestamp,
+                        },
+                    );
+                    debug!(
+                        source_id = %source_id,
+                        offset = state.offset,
+                        inode = state.inode,
+                        "Captured source checkpoint state"
+                    );
+                }
+            }
+            sources
+        };
+
+        // Build checkpoint (sync locks only, no async)
         let checkpoint = {
             let batcher_lock = batcher.lock().unwrap();
             let buffer_lock = buffer.lock().unwrap();
-
-            // Build source checkpoints (simplified - in full implementation would track reader state)
-            let mut sources = HashMap::new();
-            for (source_id, source_config) in &config.sources {
-                sources.insert(
-                    source_id.clone(),
-                    SourceCheckpoint {
-                        path: source_config.path.clone(),
-                        offset: 0, // TODO: track actual offset from source readers
-                        inode: 0,  // TODO: track actual inode from source readers
-                        last_timestamp: None,
-                    },
-                );
-            }
-
             let buffer_stats = buffer_lock.stats();
 
             CollectorCheckpoint {
@@ -525,8 +587,17 @@ async fn run_checkpoint_task(
             info!(
                 sequence = checkpoint.epoch_batcher.sequence_counter,
                 generation = checkpoint.epoch_batcher.rewind_generation,
+                sources = checkpoint.sources.len(),
                 "Saved collector checkpoint"
             );
+            for (source_id, src_cp) in &checkpoint.sources {
+                debug!(
+                    source_id = %source_id,
+                    offset = src_cp.offset,
+                    inode = src_cp.inode,
+                    "Source checkpoint saved"
+                );
+            }
         }
     }
 }

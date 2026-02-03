@@ -177,6 +177,42 @@ fn add_auto_source_fibers(config: &mut Config) {
     }
 }
 
+/// Creates an auto-generated source fiber type config for a given source ID.
+/// This is a never-closing fiber type that matches all logs from the source.
+pub fn create_auto_source_fiber_config(source_name: &str) -> FiberTypeConfig {
+    let mut source_patterns = HashMap::new();
+    source_patterns.insert(
+        source_name.to_string(),
+        FiberSourceConfig {
+            patterns: vec![PatternConfig {
+                regex: ".+".to_string(),
+                release_matching_peer_keys: vec![],
+                release_self_keys: vec![],
+                close: false,
+            }],
+        },
+    );
+
+    FiberTypeConfig {
+        description: Some(format!(
+            "Auto-generated fiber containing all logs from {}",
+            source_name
+        )),
+        temporal: TemporalConfig {
+            max_gap: None, // infinite - never closes due to time
+            gap_mode: GapMode::Session,
+        },
+        attributes: vec![AttributeConfig {
+            name: "source_marker".to_string(),
+            attr_type: AttributeType::String,
+            key: true,
+            derived: Some(source_name.to_string()),
+        }],
+        sources: source_patterns,
+        is_source_fiber: true,
+    }
+}
+
 /// Adds auto-generated source fiber types for sources from a provided list (e.g., from database).
 /// Used in parent mode where sources come from collectors, not from local config.
 pub fn add_auto_source_fibers_from_list(config: &mut Config, source_ids: &[String]) {
@@ -188,39 +224,7 @@ pub fn add_auto_source_fibers_from_list(config: &mut Config, source_ids: &[Strin
             continue;
         }
 
-        // Create a never-closing fiber type that matches all logs from this source
-        let mut source_patterns = HashMap::new();
-        source_patterns.insert(
-            source_name.clone(),
-            FiberSourceConfig {
-                patterns: vec![PatternConfig {
-                    regex: ".+".to_string(),
-                    release_matching_peer_keys: vec![],
-                    release_self_keys: vec![],
-                    close: false,
-                }],
-            },
-        );
-
-        let fiber_type = FiberTypeConfig {
-            description: Some(format!(
-                "Auto-generated fiber containing all logs from {}",
-                source_name
-            )),
-            temporal: TemporalConfig {
-                max_gap: None, // infinite - never closes due to time
-                gap_mode: GapMode::Session,
-            },
-            attributes: vec![AttributeConfig {
-                name: "source_marker".to_string(),
-                attr_type: AttributeType::String,
-                key: true,
-                derived: Some(source_name.clone()),
-            }],
-            sources: source_patterns,
-            is_source_fiber: true,
-        };
-
+        let fiber_type = create_auto_source_fiber_config(source_name);
         config.fiber_types.insert(fiber_type_name, fiber_type);
     }
 }

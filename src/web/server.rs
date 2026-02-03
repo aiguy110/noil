@@ -13,9 +13,9 @@ use super::api::{
     activate_config_version, cancel_reprocessing, create_fiber_type, delete_fiber_type,
     get_config_diff, get_config_history, get_config_version, get_current_config, get_fiber,
     get_fiber_logs, get_fiber_type, get_fiber_type_from_version, get_log, get_log_fibers,
-    get_reprocess_status, health_check, hot_reload_fiber_type, list_fiber_types, list_fibers,
-    list_logs, list_sources, start_reprocessing, test_working_set, update_config,
-    update_fiber_type, AppState,
+    get_logs_batch, get_reprocess_status, health_check, hot_reload_fiber_type,
+    list_fiber_types, list_fibers, list_logs, list_sources, start_reprocessing, test_working_set,
+    update_config, update_fiber_type, AppState,
 };
 
 /// Handler to serve index.html for frontend routes (enables client-side routing)
@@ -63,6 +63,7 @@ pub async fn run_server(
         .route("/health", get(health_check))
         .route("/api/logs", get(list_logs))
         .route("/api/logs/:id", get(get_log))
+        .route("/api/logs/batch", post(get_logs_batch))
         .route("/api/logs/:id/fibers", get(get_log_fibers))
         .route("/api/fibers", get(list_fibers))
         .route("/api/fibers/:id", get(get_fiber))

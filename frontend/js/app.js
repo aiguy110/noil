@@ -23,6 +23,7 @@ class NoilApp {
         this.selectedLogSourceId = null; // Source ID of selected log line
         this.logFibersCache = {};       // Map: logId -> fiber list
         this.fiberProcessingEditorPage = null; // Fiber processing editor instance for full page
+        this.fiberCacheInvalidatedKey = 'noil_fiber_cache_invalidated';
 
         // Page state
         this.currentPage = 'log-view';
@@ -1177,9 +1178,9 @@ class NoilApp {
 
         // Show the selected page
         const pageEl = document.getElementById(`${pageName}-page`);
-        if (pageEl) {
-            pageEl.classList.add('active');
-            this.currentPage = pageName;
+            if (pageEl) {
+                pageEl.classList.add('active');
+                this.currentPage = pageName;
 
             // Update active menu item
             this.updateHamburgerMenuActiveState();
@@ -1214,6 +1215,83 @@ class NoilApp {
                     cancelReprocessBtnEl: 'cancel-reprocess-page',
                 });
                 await this.fiberProcessingEditorPage.init();
+            }
+
+            if (pageName === 'log-view') {
+                const wasInvalidated = this.consumeFiberCacheInvalidation();
+                if (wasInvalidated) {
+                    this.invalidateFiberCache({ setFlag: false });
+                    await this.loadData();
+                }
+            }
+        }
+    }
+
+    consumeFiberCacheInvalidation() {
+        try {
+            const flag = localStorage.getItem(this.fiberCacheInvalidatedKey);
+            if (!flag) {
+                return false;
+            }
+            localStorage.removeItem(this.fiberCacheInvalidatedKey);
+            return true;
+        } catch (error) {
+            console.error('Failed to read fiber cache invalidation flag:', error);
+            return false;
+        }
+    }
+
+    invalidateFiberCache(options = {}) {
+        const { setFlag = true } = options;
+
+        this.allFibers = [];
+        this.filteredFibers = [];
+        this.logFibersCache = {};
+        this.navHistory = [];
+        this.navHistoryPosition = -1;
+        this.selectedLogId = null;
+        this.selectedLogTimestamp = null;
+        this.selectedLogSourceId = null;
+
+        if (this.timeline) {
+            this.timeline.selectedFiberId = null;
+            this.timeline.setFibers([]);
+            this.timeline.clearSelectedLogTimestamp();
+        }
+
+        if (this.logViewer) {
+            this.logViewer.currentFiber = null;
+            this.logViewer.logs = [];
+            this.logViewer.offset = 0;
+            this.logViewer.hasMore = false;
+            this.logViewer.updateHeader();
+            this.logViewer.render();
+        }
+
+        this.updateNavigationUI();
+
+        const clearSelectionBtn = document.getElementById('nav-clear-selection');
+        if (clearSelectionBtn) {
+            clearSelectionBtn.style.display = 'none';
+        }
+
+        const otherFibersSection = document.getElementById('nav-other-fibers-section');
+        if (otherFibersSection) {
+            otherFibersSection.style.display = 'none';
+        }
+
+        const otherFibersList = document.getElementById('nav-other-fibers-list');
+        if (otherFibersList) {
+            otherFibersList.innerHTML = '<p class="empty-message">No other fibers</p>';
+        }
+
+        if (setFlag) {
+            try {
+                localStorage.setItem(this.fiberCacheInvalidatedKey, new Date().toISOString());
+                localStorage.removeItem('noil_fiber_cache');
+                localStorage.removeItem('noil_nav_history');
+            } catch (error) {
+                console.error('Failed to persist fiber cache invalidation flag:', error);
             }
         }
     }

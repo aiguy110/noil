@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -106,6 +106,21 @@ pub struct LogsResponse {
     pub total: usize,
     pub limit: usize,
     pub offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsBatchRequest {
+    pub log_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub include_fiber_membership: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogsBatchResponse {
+    pub logs: Vec<LogDto>,
+    pub missing_log_ids: Vec<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fiber_memberships: Option<HashMap<Uuid, Vec<FiberDto>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -376,6 +391,64 @@ pub async fn get_log(
         .ok_or_else(|| ApiError::NotFound(format!("Log not found: {}", log_id)))?;
 
     Ok(Json(LogDto::from(log)))
+}
+
+/// POST /api/logs/batch
+pub async fn get_logs_batch(
+    State(state): State<AppState>,
+    Json(request): Json<LogsBatchRequest>,
+) -> Result<Json<LogsBatchResponse>, ApiError> {
+    if request.log_ids.is_empty() {
+        return Err(ApiError::BadRequest("log_ids cannot be empty".to_string()));
+    }
+
+    if request.log_ids.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "log_ids cannot exceed 100".to_string(),
+        ));
+    }
+
+    let logs = state.storage.get_logs_by_ids(&request.log_ids).await?;
+    let mut log_map = HashMap::new();
+    for log in logs {
+        log_map.insert(log.log_id, log);
+    }
+
+    let mut ordered_logs = Vec::new();
+    let mut missing_log_ids = Vec::new();
+    for log_id in &request.log_ids {
+        if let Some(log) = log_map.get(log_id) {
+            ordered_logs.push(LogDto::from(log.clone()));
+        } else {
+            missing_log_ids.push(*log_id);
+        }
+    }
+
+    let fiber_memberships = if request.include_fiber_membership {
+        let mut memberships = HashMap::new();
+        for log_id in &request.log_ids {
+            if !log_map.contains_key(log_id) {
+                continue;
+            }
+            let fiber_ids = state.storage.get_log_fibers(*log_id).await?;
+            let mut fibers = Vec::new();
+            for fiber_id in fiber_ids {
+                if let Some(fiber) = state.storage.get_fiber(fiber_id).await? {
+                    fibers.push(FiberDto::from(fiber));
+                }
+            }
+            memberships.insert(*log_id, fibers);
+        }
+        Some(memberships)
+    } else {
+        None
+    };
+
+    Ok(Json(LogsBatchResponse {
+        logs: ordered_logs,
+        missing_log_ids,
+        fiber_memberships,
+    }))
 }
 
 /// GET /api/logs/:id/fibers
@@ -1233,10 +1306,17 @@ pub async fn start_reprocessing(
 
     // 2. Create reprocess state
     let task_id = Uuid::new_v4();
-    let config = state.config.read().await.clone();
+    let mut config = state.config.read().await.clone();
     let version = *state.config_version.read().await;
 
     let time_range = req.time_range.map(|r| (r.start, r.end));
+
+    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+        let source_ids = state.storage.get_all_source_ids().await?;
+        if !source_ids.is_empty() {
+            crate::config::parse::add_auto_source_fibers_from_list(&mut config, &source_ids);
+        }
+    }
 
     let reprocess_state = Arc::new(RwLock::new(ReprocessState {
         task_id,
@@ -1921,4 +2001,3 @@ fn delete_fiber_type_from_yaml(yaml: &str, name: &str) -> Result<String, ApiErro
 
     Ok(result.join("\n"))
 }
-

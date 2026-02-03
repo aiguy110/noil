@@ -1,9 +1,10 @@
-use crate::config::types::{Config, StorageConfig};
+use crate::config::types::{Config, OperationMode, StorageConfig};
 use crate::fiber::processor::ProcessResult;
 use crate::fiber::FiberProcessor;
 use crate::source::reader::LogRecord;
 use crate::storage::traits::{FiberMembership, FiberRecord, Storage, StorageError, StoredLog};
 use chrono::Utc;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -76,7 +77,16 @@ pub async fn run_processor(
     let mut log_batch: Vec<StoredLog> = Vec::with_capacity(batch_size);
     let mut flush_interval = tokio::time::interval(Duration::from_secs(flush_interval_secs));
 
-    info!("Fiber processor started");
+    // Track source IDs we've already checked for dynamic fiber type registration
+    let mut known_sources: HashSet<String> = HashSet::new();
+
+    // Determine if we should dynamically add source fiber types
+    let enable_dynamic_source_fibers = config.auto_source_fibers || config.mode == OperationMode::Parent;
+
+    info!(
+        enable_dynamic_source_fibers = enable_dynamic_source_fibers,
+        "Fiber processor started"
+    );
 
     loop {
         tokio::select! {
@@ -115,6 +125,32 @@ pub async fn run_processor(
 
                         // Acquire write lock to process log (releases between logs for hot-reload)
                         let mut processor_guard = processor.write().await;
+
+                        // Dynamically add source fiber type if needed.
+                        // We do this for every new source regardless of whether other processors
+                        // (like traced fiber types) handle it, because source fibers provide a
+                        // separate "all logs from source" view independent of traced fibers.
+                        if enable_dynamic_source_fibers && !known_sources.contains(&log.source_id) {
+                            known_sources.insert(log.source_id.clone());
+
+                            match processor_guard.add_source_fiber_type(&log.source_id, current_version) {
+                                Ok(added) => {
+                                    if added {
+                                        info!(
+                                            source_id = %log.source_id,
+                                            "Dynamically registered source fiber type"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        source_id = %log.source_id,
+                                        error = %e,
+                                        "Failed to add source fiber type dynamically"
+                                    );
+                                }
+                            }
+                        }
 
                         // Process for fibers
                         let results = processor_guard.process_log(&log);

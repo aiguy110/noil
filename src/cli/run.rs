@@ -1,5 +1,5 @@
 use crate::config::parse::{load_config, load_config_with_yaml};
-use crate::config::reconcile::reconcile_config_on_startup;
+use crate::config::reconcile::{reconcile_config_on_startup, ReconcileResult};
 use crate::config::types::OperationMode;
 #[allow(deprecated)]
 use crate::config::version::compute_config_version;
@@ -47,6 +47,42 @@ pub enum RunError {
     WebServer(String),
 }
 
+/// Reconcile config file with database and log the result.
+/// Returns an error if there's an unresolved conflict.
+async fn reconcile_and_log(
+    config_path: &PathBuf,
+    storage: &dyn Storage,
+) -> Result<(), RunError> {
+    info!("Reconciling config with database");
+    let result = reconcile_config_on_startup(config_path, storage).await?;
+
+    match &result {
+        ReconcileResult::Initialized { hash } => {
+            info!(hash = %hash, "Config initialized in database");
+        }
+        ReconcileResult::NoChange => {
+            info!("Config unchanged");
+        }
+        ReconcileResult::FastForwardedFile { from_hash, to_hash } => {
+            info!(from = %from_hash, to = %to_hash, "Config file fast-forwarded from database");
+        }
+        ReconcileResult::FastForwardedDB { from_hash, to_hash } => {
+            info!(from = %from_hash, to = %to_hash, "Database fast-forwarded from config file");
+        }
+        ReconcileResult::Merged { merged_hash, .. } => {
+            info!(hash = %merged_hash, "Config merged successfully");
+        }
+        ReconcileResult::UnresolvedConflict { conflict_file } => {
+            error!(conflict_file = %conflict_file, "Unresolved config conflict");
+            return Err(crate::config::parse::ConfigError::Validation(
+                format!("Unresolved conflict in {}", conflict_file)
+            ).into());
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = match config_path {
         Some(path) => path,
@@ -86,7 +122,20 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
 async fn run_collector_mode(config_path: &PathBuf) -> Result<(), RunError> {
     info!("Starting in collector mode");
 
-    // Load config
+    // Load config to get storage path
+    let temp_config = load_config(config_path)?;
+
+    // Create storage for checkpoint persistence
+    let storage_path = &temp_config.storage.path;
+    let storage = Arc::new(
+        DuckDbStorage::new(storage_path)?
+    ) as Arc<dyn Storage>;
+
+    // Initialize storage schema and reconcile config
+    storage.init_schema().await?;
+    reconcile_and_log(config_path, storage.as_ref()).await?;
+
+    // Load config (may have been updated by reconciliation)
     let (config, _config_yaml) = load_config_with_yaml(config_path)?;
 
     // Compute config version
@@ -95,13 +144,6 @@ async fn run_collector_mode(config_path: &PathBuf) -> Result<(), RunError> {
         .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
 
     info!(config_version = config_version, "Computed config version");
-
-    // Create storage for checkpoint persistence
-    let storage_path = &config.storage.path;
-    let storage = Arc::new(
-        crate::storage::duckdb::DuckDbStorage::new(storage_path)
-            .map_err(|e| RunError::Storage(e))?
-    ) as Arc<dyn crate::storage::traits::Storage>;
 
     // Create and run collector
     let runner = crate::collector::runner::CollectorRunner::new(config, config_version)
@@ -116,7 +158,17 @@ async fn run_collector_mode(config_path: &PathBuf) -> Result<(), RunError> {
 async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
     info!("Starting in parent mode");
 
-    // Load config
+    // Load config to get storage path
+    let temp_config = load_config(config_path)?;
+
+    // Initialize storage and reconcile config
+    let storage_path = &temp_config.storage.path;
+    info!(path = %storage_path.display(), "Initializing storage");
+    let storage = Arc::new(DuckDbStorage::new(storage_path)?);
+    storage.init_schema().await?;
+    reconcile_and_log(config_path, storage.as_ref()).await?;
+
+    // Load config (may have been updated by reconciliation)
     let (mut config, config_yaml) = load_config_with_yaml(config_path)?;
 
     // Compute config version
@@ -125,14 +177,6 @@ async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
         .map_err(|e| crate::config::parse::ConfigError::Io(e))?;
 
     info!(config_version = config_version, "Computed config version");
-
-    // Initialize storage
-    let storage_path = &config.storage.path;
-    info!(path = %storage_path.display(), "Initializing storage");
-    let storage = Arc::new(DuckDbStorage::new(storage_path)?);
-
-    // Initialize storage schema
-    storage.init_schema().await?;
 
     // In parent mode, add auto-generated source fiber types for sources from collectors
     // Query database for all source IDs that have sent logs
@@ -265,43 +309,15 @@ async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
 async fn run_standalone_mode(config_path: &PathBuf) -> Result<(), RunError> {
     info!("Starting in standalone mode");
 
-    // Initialize storage first (needed for reconciliation)
-    // Note: We expand storage path from config later, but for reconciliation
-    // we use a temporary default or the path from config file parsing
+    // Initialize storage and reconcile config
     let temp_config = load_config(config_path)?;
     let storage_path = &temp_config.storage.path;
     info!(path = %storage_path.display(), "Initializing storage");
     let storage = Arc::new(DuckDbStorage::new(storage_path)?);
     storage.init_schema().await?;
+    reconcile_and_log(config_path, storage.as_ref()).await?;
 
-    // Reconcile config file with database
-    info!("Reconciling config with database");
-    let reconcile_result = reconcile_config_on_startup(config_path, storage.as_ref()).await?;
-    match &reconcile_result {
-        crate::config::reconcile::ReconcileResult::Initialized { hash } => {
-            info!(hash = %hash, "Config initialized in database");
-        }
-        crate::config::reconcile::ReconcileResult::NoChange => {
-            info!("Config unchanged");
-        }
-        crate::config::reconcile::ReconcileResult::FastForwardedFile { from_hash, to_hash } => {
-            info!(from = %from_hash, to = %to_hash, "Config file fast-forwarded from database");
-        }
-        crate::config::reconcile::ReconcileResult::FastForwardedDB { from_hash, to_hash } => {
-            info!(from = %from_hash, to = %to_hash, "Database fast-forwarded from config file");
-        }
-        crate::config::reconcile::ReconcileResult::Merged { merged_hash, .. } => {
-            info!(hash = %merged_hash, "Config merged successfully");
-        }
-        crate::config::reconcile::ReconcileResult::UnresolvedConflict { conflict_file } => {
-            error!(conflict_file = %conflict_file, "Unresolved config conflict");
-            return Err(crate::config::parse::ConfigError::Validation(
-                format!("Unresolved conflict in {}", conflict_file)
-            ).into());
-        }
-    }
-
-    // Load and validate config (may have been updated by reconciliation)
+    // Load config (may have been updated by reconciliation)
     let (config, config_yaml) = load_config_with_yaml(config_path)?;
 
     // Compute config version from content hash

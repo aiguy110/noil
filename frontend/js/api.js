@@ -50,6 +50,17 @@ class NoilAPI {
         return this.request(`/api/logs/${logId}`);
     }
 
+    async getLogsBatch(logIds, options = {}) {
+        const includeFiberMembership = options.includeFiberMembership === true;
+        return this.request('/api/logs/batch', {
+            method: 'POST',
+            body: JSON.stringify({
+                log_ids: logIds,
+                include_fiber_membership: includeFiberMembership,
+            }),
+        });
+    }
+
     async getLogFibers(logId) {
         return this.request(`/api/logs/${logId}/fibers`);
     }

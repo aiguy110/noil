@@ -349,6 +349,63 @@ impl Storage for DuckDbStorage {
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
     }
 
+    async fn get_logs_by_ids(&self, log_ids: &[Uuid]) -> Result<Vec<StoredLog>, StorageError> {
+        if log_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn.clone();
+        let id_strings: Vec<String> = log_ids.iter().map(|id| id.to_string()).collect();
+        let placeholders = id_strings
+            .iter()
+            .map(|id| format!("'{}'", id))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let query = format!(
+            "SELECT log_id, epoch_us(timestamp), source_id, raw_text, epoch_us(ingestion_time), config_version\n             FROM raw_logs WHERE log_id IN ({})",
+            placeholders
+        );
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(&query)?;
+            let rows = stmt.query_map([], |row| {
+                Ok(StoredLog {
+                    log_id: Uuid::parse_str(&row.get::<_, String>(0)?)
+                        .map_err(|e| duckdb::Error::FromSqlConversionFailure(
+                            0,
+                            duckdb::types::Type::Text,
+                            Box::new(e),
+                        ))?,
+                    timestamp: DateTime::from_timestamp_micros(row.get::<_, i64>(1)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            1,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    source_id: row.get(2)?,
+                    raw_text: row.get(3)?,
+                    ingestion_time: DateTime::from_timestamp_micros(row.get::<_, i64>(4)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            4,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    config_version: row.get(5)?,
+                })
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+
+            Ok::<_, StorageError>(results)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
     async fn query_logs_by_time(
         &self,
         start: DateTime<Utc>,
