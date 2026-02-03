@@ -83,6 +83,30 @@ async fn reconcile_and_log(
     Ok(())
 }
 
+fn format_web_url(listen: &str) -> String {
+    let trimmed = listen.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+
+    let (host, port) = trimmed
+        .rsplit_once(':')
+        .map(|(host, port)| (host, port))
+        .unwrap_or((trimmed, ""));
+
+    let host = match host {
+        "0.0.0.0" => "127.0.0.1",
+        "[::]" => "[::1]",
+        _ => host,
+    };
+
+    if port.is_empty() {
+        format!("http://{}", host)
+    } else {
+        format!("http://{}:{}", host, port)
+    }
+}
+
 pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = match config_path {
         Some(path) => path,
@@ -247,6 +271,7 @@ async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
             .map_err(|e| RunError::Config(crate::config::parse::ConfigError::Validation(e.to_string())))
     });
 
+    let web_url = format_web_url(&config.web.listen);
     info!("Parent mode started, press Ctrl+C to shutdown");
 
     // Wait for shutdown signal or parent completion
@@ -258,7 +283,7 @@ async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
         result = &mut parent_handle => {
             match result {
                 Ok(Ok(())) => {
-                    info!("Parent runner completed successfully. Web server continues running. Press Ctrl+C to shutdown.");
+                    info!("Parent runner completed successfully. Web server continues running at {}. Press Ctrl+C to shutdown.", web_url);
                     // Wait for Ctrl+C
                     match signal::ctrl_c().await {
                         Ok(()) => {
@@ -660,6 +685,7 @@ async fn run_standalone_mode(config_path: &PathBuf) -> Result<(), RunError> {
         .map_err(|e| RunError::WebServer(e.to_string()))
     });
 
+    let web_url = format_web_url(&config.web.listen);
     info!("Pipeline started, press Ctrl+C to shutdown");
 
     // Create channel to signal abort to sequencer wait task
@@ -733,7 +759,7 @@ async fn run_standalone_mode(config_path: &PathBuf) -> Result<(), RunError> {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
 
-                    info!("Web server continues running. Press Ctrl+C to shutdown.");
+                    info!("Web server continues running at {}. Press Ctrl+C to shutdown.", web_url);
                     // Don't send shutdown signal - let web server continue running
                     // Wait for Ctrl+C
                     match signal::ctrl_c().await {

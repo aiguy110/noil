@@ -171,10 +171,6 @@ fiber_types:
           # Generic thread matcher
           - regex: 'thread-(?P<program2_thread>\d+)'
 
-      nginx_access:
-        patterns:
-          - regex: '(?P<client_ip>[\d\.]+) - - "GET /api/devices HTTP/1.1"' 
-
   # Groups consecutive log lines from the simple service
   # Demonstrates:
   #   - Session windowing with short gap (1s)
