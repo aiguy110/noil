@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/assets/noil_icon_v1_transparent.png" alt="Noil Icon" width="128">
+</p>
+
 # Noil
 
 **noil** /nɔɪl/ *noun* — short, tangled fibers combed out during textile processing.

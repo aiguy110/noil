@@ -16,6 +16,7 @@ class FiberProcessingEditor {
         this.currentConfigVersion = null; // Current active config version
         this.selectedVersionHash = null; // Selected version in history modal
         this.workingSetViewMode = 'pretty'; // 'pretty' or 'raw'
+        this.workingSetViewStorageKey = 'noil_working_set_view_mode';
         this.elementIds = {
             typeListEl: 'fiber-type-list',
             typeNameEl: 'fiber-type-name',
@@ -144,10 +145,10 @@ class FiberProcessingEditor {
             throw new Error('CodeMirror is not available');
         }
 
-        const { EditorView, EditorState, Compartment, basicSetup, yaml } = window.CodeMirror;
+        const { EditorView, EditorState, Compartment, basicSetup, yaml, keymap, indentWithTab } = window.CodeMirror;
 
         // Verify all required components are present
-        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml) {
+        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml || !keymap || !indentWithTab) {
             throw new Error('CodeMirror components are incomplete');
         }
 
@@ -166,6 +167,7 @@ class FiberProcessingEditor {
                     }
                 }),
                 EditorState.tabSize.of(2),
+                keymap.of([indentWithTab]),
                 this.editableCompartment.of(EditorView.editable.of(false)), // Start disabled
             ]
         });
@@ -941,14 +943,42 @@ sources:
         }
 
         if (viewToggleBtn) {
+            const storedViewMode = this.loadWorkingSetViewMode();
+            if (storedViewMode) {
+                this.workingSetViewMode = storedViewMode;
+                viewToggleBtn.checked = storedViewMode === 'raw';
+            } else {
+                this.workingSetViewMode = viewToggleBtn.checked ? 'raw' : 'pretty';
+            }
             viewToggleBtn.addEventListener('change', () => {
                 this.workingSetViewMode = viewToggleBtn.checked ? 'raw' : 'pretty';
+                this.saveWorkingSetViewMode(this.workingSetViewMode);
                 this.renderWorkingSetPanel();
             });
         }
 
         // Initial render
         this.renderWorkingSetPanel();
+    }
+
+    loadWorkingSetViewMode() {
+        try {
+            const stored = localStorage.getItem(this.workingSetViewStorageKey);
+            if (stored === 'raw' || stored === 'pretty') {
+                return stored;
+            }
+        } catch (error) {
+            console.error('Failed to load working set view mode from localStorage:', error);
+        }
+        return null;
+    }
+
+    saveWorkingSetViewMode(mode) {
+        try {
+            localStorage.setItem(this.workingSetViewStorageKey, mode);
+        } catch (error) {
+            console.error('Failed to save working set view mode to localStorage:', error);
+        }
     }
 
     async renderWorkingSetPanel() {
@@ -1024,7 +1054,22 @@ sources:
             return;
         }
 
-        for (const logId of workingSet.logIds) {
+        // Sort logIds by timestamp before rendering
+        const sortedLogIds = workingSet.logIds.slice().sort((idA, idB) => {
+            const logA = logsById[idA] || workingSet.logs[idA];
+            const logB = logsById[idB] || workingSet.logs[idB];
+
+            // Handle missing logs (should be rare due to cleanup at line 1040-1044)
+            if (!logA) return 1;  // Push missing logs to end
+            if (!logB) return -1;
+
+            // Compare timestamps (convert to milliseconds for numeric comparison)
+            const tsA = new Date(logA.timestamp).getTime();
+            const tsB = new Date(logB.timestamp).getTime();
+            return tsA - tsB;
+        });
+
+        for (const logId of sortedLogIds) {
             const log = logsById[logId] || workingSet.logs[logId];
             if (!log) {
                 continue;

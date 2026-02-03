@@ -91,9 +91,9 @@ class ConfigEditor {
             throw new Error('CodeMirror is not available');
         }
 
-        const { EditorView, EditorState, Compartment, basicSetup, yaml } = window.CodeMirror;
+        const { EditorView, EditorState, Compartment, basicSetup, yaml, keymap, indentWithTab } = window.CodeMirror;
 
-        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml) {
+        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml || !keymap || !indentWithTab) {
             throw new Error('CodeMirror components are incomplete');
         }
 
@@ -107,6 +107,7 @@ class ConfigEditor {
                 basicSetup,
                 yaml,
                 EditorState.tabSize.of(2),
+                keymap.of([indentWithTab]),
                 this.editableCompartment.of(EditorView.editable.of(true))
             ]
         });

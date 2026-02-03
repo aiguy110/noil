@@ -6,8 +6,10 @@ const code = `
 // CodeMirror 6 Bundle
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, Compartment } from '@codemirror/state';
+import { keymap } from '@codemirror/view';
 import { StreamLanguage } from '@codemirror/language';
 import { yaml } from '@codemirror/legacy-modes/mode/yaml';
+import { indentWithTab } from '@codemirror/commands';
 
 // Create YAML language support
 const yamlLanguage = StreamLanguage.define(yaml);
@@ -18,7 +20,9 @@ export {
     EditorState,
     Compartment,
     basicSetup,
-    yamlLanguage as yaml
+    yamlLanguage as yaml,
+    keymap,
+    indentWithTab
 };
 `;
 

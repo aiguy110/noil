@@ -7,10 +7,10 @@
         const module = await import('./codemirror/codemirror.bundle.js');
 
         // Extract components
-        const { EditorView, EditorState, Compartment, basicSetup, yaml } = module;
+        const { EditorView, EditorState, Compartment, basicSetup, yaml, keymap, indentWithTab } = module;
 
         // Verify all components are present
-        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml) {
+        if (!EditorView || !EditorState || !Compartment || !basicSetup || !yaml || !keymap || !indentWithTab) {
             throw new Error('One or more CodeMirror components failed to load from bundle');
         }
 
@@ -20,7 +20,9 @@
             EditorState,
             Compartment,
             basicSetup,
-            yaml
+            yaml,
+            keymap,
+            indentWithTab
         };
 
         console.log('CodeMirror loaded successfully from local bundle');
