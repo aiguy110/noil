@@ -1,0 +1,44 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-modern:
+    name: Build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --locked
+
+  build-glibc-2-17:
+    name: Build (glibc 2.17)
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux2014_x86_64
+    steps:
+      - name: Install build dependencies
+        run: |
+          yum -y install curl gcc gcc-c++ make openssl-devel pkgconfig
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+          source "$HOME/.cargo/env"
+          rustup default stable
+
+      - name: Build
+        run: |
+          source "$HOME/.cargo/env"
+          cargo build --locked
