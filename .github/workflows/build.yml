@@ -48,4 +48,5 @@ jobs:
       - name: Build
         run: |
           source "$HOME/.cargo/env"
+          export CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1 -DDUCKDB_PLATFORM="linux_amd64"'
           cargo build --locked
