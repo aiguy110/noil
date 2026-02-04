@@ -30,7 +30,7 @@ jobs:
           yum -y install curl gcc gcc-c++ make openssl-devel pkgconfig
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Install Rust
         run: |
