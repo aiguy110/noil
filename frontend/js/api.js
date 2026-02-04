@@ -88,6 +88,30 @@ class NoilAPI {
         return this.request(`/api/fibers/${fiberId}/logs?${query}`);
     }
 
+    // Filtered fiber query
+    async queryFibersFiltered(params = {}) {
+        return this.request('/api/fibers/query', {
+            method: 'POST',
+            body: JSON.stringify({
+                types: params.types || [],
+                attributes: params.attributes || {},
+                closed: params.closed,
+                start_time: params.startTime?.toISOString(),
+                end_time: params.endTime?.toISOString(),
+                max_fibers: params.maxFibers || 200,
+                offset: params.offset || 0,
+            }),
+        });
+    }
+
+    // Get fiber membership summaries (simplified log points)
+    async getFiberMembershipSummaries(fiberIds) {
+        return this.request('/api/fibers/membership-summaries', {
+            method: 'POST',
+            body: JSON.stringify(fiberIds),
+        });
+    }
+
     // Get all fiber types with metadata
     async getAllFiberTypes() {
         return this.request('/api/fiber-types');

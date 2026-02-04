@@ -187,6 +187,52 @@ pub struct FiberTypeMetadata {
     pub is_source_fiber: bool,
 }
 
+// ============================================================================
+// Filtered Fiber Query Types
+// ============================================================================
+
+fn default_max_fibers() -> usize {
+    200
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FilteredFibersParams {
+    #[serde(default)]
+    pub types: Vec<String>,
+    #[serde(default)]
+    pub attributes: HashMap<String, String>,
+    pub closed: Option<bool>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    #[serde(default = "default_max_fibers")]
+    pub max_fibers: usize,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FilteredFibersResponse {
+    pub fibers: Vec<FiberDto>,
+    pub total_matching: usize,
+    pub truncated: bool,
+}
+
+// ============================================================================
+// Fiber Membership Summary Types
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct LogPoint {
+    pub timestamp: DateTime<Utc>,
+    pub source_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FiberMembershipSummary {
+    pub fiber_id: Uuid,
+    pub log_points: Vec<LogPoint>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,
@@ -559,6 +605,163 @@ pub async fn get_fiber_logs(
         limit: params.limit(),
         offset: params.offset(),
     }))
+}
+
+/// POST /api/fibers/query - Filtered fiber query with time overlap, attribute filters, etc.
+pub async fn query_fibers_filtered(
+    State(state): State<AppState>,
+    Json(params): Json<FilteredFibersParams>,
+) -> Result<Json<FilteredFibersResponse>, ApiError> {
+    let fiber_types = if params.types.is_empty() {
+        None
+    } else {
+        Some(params.types.as_slice())
+    };
+
+    let max_fibers = params.max_fibers.min(1000);
+
+    let (fibers, total_matching) = state
+        .storage
+        .query_fibers_filtered(
+            fiber_types,
+            &params.attributes,
+            params.closed,
+            params.start_time,
+            params.end_time,
+            max_fibers,
+            params.offset,
+        )
+        .await?;
+
+    let truncated = total_matching > params.offset + fibers.len();
+
+    let fibers_dto: Vec<FiberDto> = fibers.into_iter().map(FiberDto::from).collect();
+
+    Ok(Json(FilteredFibersResponse {
+        fibers: fibers_dto,
+        total_matching,
+        truncated,
+    }))
+}
+
+/// POST /api/fibers/membership-summaries - Get simplified log points for fibers
+pub async fn get_fiber_membership_summaries(
+    State(state): State<AppState>,
+    Json(fiber_ids): Json<Vec<Uuid>>,
+) -> Result<Json<Vec<FiberMembershipSummary>>, ApiError> {
+    if fiber_ids.is_empty() {
+        return Ok(Json(vec![]));
+    }
+
+    if fiber_ids.len() > 500 {
+        return Err(ApiError::BadRequest(
+            "fiber_ids cannot exceed 500".to_string(),
+        ));
+    }
+
+    let log_points_map = state.storage.get_fiber_log_points(&fiber_ids).await?;
+
+    let summaries: Vec<FiberMembershipSummary> = fiber_ids
+        .into_iter()
+        .map(|fiber_id| {
+            let points = log_points_map
+                .get(&fiber_id)
+                .cloned()
+                .unwrap_or_default();
+            let simplified = simplify_log_points(points);
+            FiberMembershipSummary {
+                fiber_id,
+                log_points: simplified,
+            }
+        })
+        .collect();
+
+    Ok(Json(summaries))
+}
+
+/// Simplify log points to only include start, end, and transition points
+fn simplify_log_points(points: Vec<(DateTime<Utc>, String)>) -> Vec<LogPoint> {
+    if points.is_empty() {
+        return vec![];
+    }
+
+    if points.len() == 1 {
+        return vec![LogPoint {
+            timestamp: points[0].0,
+            source_id: points[0].1.clone(),
+        }];
+    }
+
+    fn push_unique(result: &mut Vec<LogPoint>, timestamp: DateTime<Utc>, source_id: &str) {
+        if result
+            .last()
+            .map(|point| point.timestamp == timestamp && point.source_id == source_id)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        result.push(LogPoint {
+            timestamp,
+            source_id: source_id.to_string(),
+        });
+    }
+
+    let mut result = Vec::new();
+    push_unique(&mut result, points[0].0, &points[0].1);
+
+    for i in 1..points.len() {
+        let prev = &points[i - 1];
+        let curr = &points[i];
+        if curr.1 != prev.1 {
+            // Source changed - include both sides of the transition
+            push_unique(&mut result, prev.0, &prev.1);
+            push_unique(&mut result, curr.0, &curr.1);
+        }
+    }
+
+    // Always include last point
+    let last = points.last().unwrap();
+    push_unique(&mut result, last.0, &last.1);
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simplify_log_points;
+    use chrono::{DateTime, Utc};
+
+    fn ts(micros: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_micros(micros).unwrap()
+    }
+
+    #[test]
+    fn simplify_log_points_includes_both_sides_of_transitions() {
+        let points = vec![
+            (ts(1), "source_a".to_string()),
+            (ts(2), "source_a".to_string()),
+            (ts(3), "source_b".to_string()),
+            (ts(4), "source_b".to_string()),
+            (ts(5), "source_c".to_string()),
+        ];
+
+        let simplified = simplify_log_points(points);
+        let simplified_pairs: Vec<(i64, String)> = simplified
+            .iter()
+            .map(|point| (point.timestamp.timestamp_micros(), point.source_id.clone()))
+            .collect();
+
+        assert_eq!(
+            simplified_pairs,
+            vec![
+                (1, "source_a".to_string()),
+                (2, "source_a".to_string()),
+                (3, "source_b".to_string()),
+                (4, "source_b".to_string()),
+                (5, "source_c".to_string())
+            ]
+        );
+    }
 }
 
 /// GET /api/fiber-types

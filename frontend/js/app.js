@@ -21,6 +21,7 @@ class NoilApp {
         this.selectedLogId = null;      // Currently selected log line
         this.selectedLogTimestamp = null; // Timestamp of selected log line
         this.selectedLogSourceId = null; // Source ID of selected log line
+        this.membershipSummaryCache = new Map();
         this.logFibersCache = {};       // Map: logId -> fiber list
         this.fiberProcessingEditorPage = null; // Fiber processing editor instance for full page
         this.fiberCacheInvalidatedKey = 'noil_fiber_cache_invalidated';
@@ -626,10 +627,15 @@ class NoilApp {
 
         // Filter timeline to show all these fibers
         const filteredFibers = this.allFibers.filter(f => allFiberIds.has(f.id));
-        this.timeline.setFibers(filteredFibers);
+        const viewMode = this.timeline?.getViewMode?.() || 'straight';
+        if (viewMode === 'tangled') {
+            this.applyTangledFibers(filteredFibers);
+        } else {
+            this.timeline.setFibers(filteredFibers);
+        }
     }
 
-    clearLogSelection() {
+    async clearLogSelection() {
         this.selectedLogId = null;
         this.selectedLogTimestamp = null;
         this.selectedLogSourceId = null;
@@ -637,11 +643,49 @@ class NoilApp {
         this.timeline.clearSelectedLogTimestamp();
 
         // Restore full filtered timeline
-        this.timeline.setFibers(this.filteredFibers);
+        await this.filterFibers();
 
         // Hide UI elements
         document.getElementById('nav-clear-selection').style.display = 'none';
         document.getElementById('nav-other-fibers-section').style.display = 'none';
+    }
+
+    async applyTangledFibers(fibers) {
+        const membershipData = await this.getMembershipDataForFibers(fibers);
+        this.timeline.setFibersWithMembership(fibers, membershipData);
+    }
+
+    async getMembershipDataForFibers(fibers) {
+        const fiberTypeMetadata = this.timeline?.fiberTypeMetadata || [];
+        const sourceMap = new Map(fiberTypeMetadata.map(ft => [ft.name, ft.is_source_fiber]));
+        const tracedFiberIds = fibers
+            .filter(f => sourceMap.get(f.fiber_type) !== true)
+            .map(f => f.id);
+
+        const membershipData = {};
+        const missingIds = [];
+
+        tracedFiberIds.forEach(fiberId => {
+            if (this.membershipSummaryCache.has(fiberId)) {
+                membershipData[fiberId] = this.membershipSummaryCache.get(fiberId);
+            } else {
+                missingIds.push(fiberId);
+            }
+        });
+
+        if (missingIds.length > 0) {
+            try {
+                const summaries = await api.getFiberMembershipSummaries(missingIds);
+                summaries.forEach(summary => {
+                    this.membershipSummaryCache.set(summary.fiber_id, summary.log_points);
+                    membershipData[summary.fiber_id] = summary.log_points;
+                });
+            } catch (error) {
+                console.error('Failed to load membership summaries:', error);
+            }
+        }
+
+        return membershipData;
     }
 
     updateNavigationUI() {
@@ -827,7 +871,7 @@ class NoilApp {
         return [...sourceFiberTypes, ...tracedFiberTypes];
     }
 
-    applyFilters() {
+    async applyFilters() {
         // Get filter values
         this.filters.showClosed = document.getElementById('filter-closed').checked;
 
@@ -842,51 +886,66 @@ class NoilApp {
         this.filters.attributeLogic = logicRadio ? logicRadio.value : 'AND';
 
         // Apply filters to fibers
-        this.filterFibers();
+        await this.filterFibers();
     }
 
-    filterFibers() {
-        this.filteredFibers = this.allFibers.filter(fiber => {
-            // Filter by closed status
-            if (!this.filters.showClosed && fiber.closed) {
-                return false;
-            }
+    async filterFibers() {
+        // Check if we should use tangled view optimization
+        const viewMode = this.timeline?.getViewMode?.() || 'straight';
 
-            // Filter by fiber type
-            if (this.filters.fiberTypes.length > 0) {
-                if (!this.filters.fiberTypes.includes(fiber.fiber_type)) {
+        if (viewMode === 'tangled') {
+            // Use optimized tangled view loading with server-side filtering
+            const { fibers, membershipData, truncated } = await this.loadDataForTangledView();
+            this.filteredFibers = fibers;
+            this.timeline.setFibersWithMembership(fibers, membershipData);
+
+            if (truncated) {
+                console.warn('Results were truncated. Try narrowing your filter criteria.');
+            }
+        } else {
+            // Use client-side filtering for straight view
+            this.filteredFibers = this.allFibers.filter(fiber => {
+                // Filter by closed status
+                if (!this.filters.showClosed && fiber.closed) {
                     return false;
                 }
-            }
 
-            // Filter by time range
-            if (this.filters.timeRange !== 'all') {
-                const now = Date.now();
-                const lastActivity = new Date(fiber.last_activity).getTime();
-                const ranges = {
-                    '1h': 3600000,
-                    '6h': 21600000,
-                    '24h': 86400000,
-                    '7d': 604800000,
-                };
-
-                if (now - lastActivity > ranges[this.filters.timeRange]) {
-                    return false;
+                // Filter by fiber type
+                if (this.filters.fiberTypes.length > 0) {
+                    if (!this.filters.fiberTypes.includes(fiber.fiber_type)) {
+                        return false;
+                    }
                 }
-            }
 
-            // Filter by attributes
-            if (this.filters.attributes.length > 0) {
-                const attributeMatch = this.matchesAttributeFilters(fiber);
-                if (!attributeMatch) {
-                    return false;
+                // Filter by time range
+                if (this.filters.timeRange !== 'all') {
+                    const now = Date.now();
+                    const lastActivity = new Date(fiber.last_activity).getTime();
+                    const ranges = {
+                        '1h': 3600000,
+                        '6h': 21600000,
+                        '24h': 86400000,
+                        '7d': 604800000,
+                    };
+
+                    if (now - lastActivity > ranges[this.filters.timeRange]) {
+                        return false;
+                    }
                 }
-            }
 
-            return true;
-        });
+                // Filter by attributes
+                if (this.filters.attributes.length > 0) {
+                    const attributeMatch = this.matchesAttributeFilters(fiber);
+                    if (!attributeMatch) {
+                        return false;
+                    }
+                }
 
-        this.timeline.setFibers(this.filteredFibers);
+                return true;
+            });
+
+            this.timeline.setFibers(this.filteredFibers);
+        }
     }
 
     matchesAttributeFilters(fiber) {
@@ -1061,13 +1120,55 @@ class NoilApp {
             }
 
             this.allFibers = allFibers;
-            this.applyFilters();
+            await this.applyFilters();
         } catch (error) {
             console.error('Failed to load data:', error);
         } finally {
             if (!silent) {
                 this.showLoading(false);
             }
+        }
+    }
+
+    /**
+     * Load fiber data optimized for tangled view mode.
+     * Uses the filtered fiber query API and fetches membership summaries for traced fibers.
+     */
+    async loadDataForTangledView(filters = {}) {
+        try {
+            // Build query params from current filters
+            const queryParams = {
+                types: this.filters.fiberTypes.length > 0 ? this.filters.fiberTypes : undefined,
+                closed: this.filters.showClosed ? undefined : false,
+                maxFibers: 200,
+            };
+
+            // Add time range filter if applicable
+            if (this.filters.timeRange !== 'all') {
+                const now = new Date();
+                const ranges = {
+                    '1h': 3600000,
+                    '6h': 21600000,
+                    '24h': 86400000,
+                    '7d': 604800000,
+                };
+                const rangeMs = ranges[this.filters.timeRange];
+                if (rangeMs) {
+                    queryParams.startTime = new Date(now.getTime() - rangeMs);
+                    queryParams.endTime = now;
+                }
+            }
+
+            // Fetch filtered fibers
+            const response = await api.queryFibersFiltered(queryParams);
+            const fibers = response.fibers || [];
+
+            const membershipData = await this.getMembershipDataForFibers(fibers);
+
+            return { fibers, membershipData, truncated: response.truncated };
+        } catch (error) {
+            console.error('Failed to load data for tangled view:', error);
+            return { fibers: [], membershipData: {}, truncated: false };
         }
     }
 

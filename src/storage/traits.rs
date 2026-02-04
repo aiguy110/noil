@@ -118,6 +118,18 @@ pub trait Storage: Send + Sync {
         offset: usize,
     ) -> Result<Vec<FiberRecord>, StorageError>;
 
+    /// Query fibers with filtering by type, attributes, time overlap, and closed status
+    async fn query_fibers_filtered(
+        &self,
+        fiber_types: Option<&[String]>,
+        attribute_filters: &std::collections::HashMap<String, String>,
+        closed: Option<bool>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        max_fibers: usize,
+        offset: usize,
+    ) -> Result<(Vec<FiberRecord>, usize), StorageError>;
+
     // Memberships
     /// Write multiple fiber memberships in bulk
     async fn write_memberships(&self, memberships: &[FiberMembership]) -> Result<(), StorageError>;
@@ -132,6 +144,12 @@ pub trait Storage: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<StoredLog>, StorageError>;
+
+    /// Get log points (timestamp, source_id) for multiple fibers, for membership summaries
+    async fn get_fiber_log_points(
+        &self,
+        fiber_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<(DateTime<Utc>, String)>>, StorageError>;
 
     /// Get all unique fiber types
     async fn get_all_fiber_types(&self) -> Result<Vec<String>, StorageError>;

@@ -1528,6 +1528,192 @@ impl Storage for DuckDbStorage {
         .await
         .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
     }
+
+    async fn query_fibers_filtered(
+        &self,
+        fiber_types: Option<&[String]>,
+        attribute_filters: &std::collections::HashMap<String, String>,
+        closed: Option<bool>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        max_fibers: usize,
+        offset: usize,
+    ) -> Result<(Vec<FiberRecord>, usize), StorageError> {
+        let conn = self.conn.clone();
+        let fiber_types = fiber_types.map(|t| t.to_vec());
+        let attribute_filters = attribute_filters.clone();
+        let start_micros = start_time.map(|t| t.timestamp_micros());
+        let end_micros = end_time.map(|t| t.timestamp_micros());
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Build WHERE clause dynamically
+            let mut where_clauses: Vec<String> = vec![];
+
+            // Type filtering
+            if let Some(ref types) = fiber_types {
+                if !types.is_empty() {
+                    let placeholders = types.iter().map(|t| format!("'{}'", t.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
+                    where_clauses.push(format!("fiber_type IN ({})", placeholders));
+                }
+            }
+
+            // Closed filter
+            if let Some(is_closed) = closed {
+                where_clauses.push(format!("closed = {}", is_closed));
+            }
+
+            // Time overlap filter: fiber overlaps [start, end] range
+            // This means: first_activity <= end AND last_activity >= start
+            if let Some(end_us) = end_micros {
+                where_clauses.push(format!("first_activity <= to_timestamp({} / 1000000.0)", end_us));
+            }
+            if let Some(start_us) = start_micros {
+                where_clauses.push(format!("last_activity >= to_timestamp({} / 1000000.0)", start_us));
+            }
+
+            // Attribute filtering using DuckDB JSON functions
+            for (key, value) in &attribute_filters {
+                let escaped_key = key.replace('\'', "''");
+                let escaped_value = value.replace('\'', "''");
+                where_clauses.push(format!(
+                    "json_extract_string(attributes, '$.{}') = '{}'",
+                    escaped_key, escaped_value
+                ));
+            }
+
+            let where_clause = if where_clauses.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clauses.join(" AND "))
+            };
+
+            // Count query
+            let count_query = format!("SELECT COUNT(*) FROM fibers {}", where_clause);
+            let mut count_stmt = conn.prepare(&count_query)?;
+            let mut count_rows = count_stmt.query([])?;
+            let total_matching: usize = if let Some(row) = count_rows.next()? {
+                let count: i64 = row.get(0)?;
+                count as usize
+            } else {
+                0
+            };
+
+            // Main query with ordering by duration (longest first), then by start time
+            let query = format!(
+                "SELECT fiber_id, fiber_type, config_version, attributes, epoch_us(first_activity), epoch_us(last_activity), closed
+                 FROM fibers
+                 {}
+                 ORDER BY (epoch_us(last_activity) - epoch_us(first_activity)) DESC, first_activity ASC
+                 LIMIT {} OFFSET {}",
+                where_clause, max_fibers, offset
+            );
+
+            let mut stmt = conn.prepare(&query)?;
+            let rows = stmt.query_map([], |row| {
+                Ok(FiberRecord {
+                    fiber_id: Uuid::parse_str(&row.get::<_, String>(0)?)
+                        .map_err(|e| duckdb::Error::FromSqlConversionFailure(
+                            0,
+                            duckdb::types::Type::Text,
+                            Box::new(e),
+                        ))?,
+                    fiber_type: row.get(1)?,
+                    config_version: row.get(2)?,
+                    attributes: serde_json::from_str(&row.get::<_, String>(3)?)
+                        .map_err(|e| duckdb::Error::FromSqlConversionFailure(
+                            3,
+                            duckdb::types::Type::Text,
+                            Box::new(e),
+                        ))?,
+                    first_activity: DateTime::from_timestamp_micros(row.get::<_, i64>(4)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            4,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    last_activity: DateTime::from_timestamp_micros(row.get::<_, i64>(5)?)
+                        .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                            5,
+                            duckdb::types::Type::BigInt,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                        ))?,
+                    closed: row.get(6)?,
+                })
+            })?;
+
+            let mut fibers = Vec::new();
+            for row in rows {
+                fibers.push(row?);
+            }
+
+            Ok((fibers, total_matching))
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_fiber_log_points(
+        &self,
+        fiber_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<(DateTime<Utc>, String)>>, StorageError> {
+        if fiber_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let conn = self.conn.clone();
+        let fiber_id_strings: Vec<String> = fiber_ids.iter().map(|id| id.to_string()).collect();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+
+            // Build IN clause
+            let placeholders = fiber_id_strings
+                .iter()
+                .map(|id| format!("'{}'", id))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let query = format!(
+                "SELECT m.fiber_id, epoch_us(l.timestamp), l.source_id
+                 FROM fiber_memberships m
+                 INNER JOIN raw_logs l ON m.log_id = l.log_id
+                 WHERE m.fiber_id IN ({})
+                 ORDER BY m.fiber_id, l.timestamp",
+                placeholders
+            );
+
+            let mut stmt = conn.prepare(&query)?;
+            let rows = stmt.query_map([], |row| {
+                let fiber_id_str: String = row.get(0)?;
+                let fiber_id = Uuid::parse_str(&fiber_id_str)
+                    .map_err(|e| duckdb::Error::FromSqlConversionFailure(
+                        0,
+                        duckdb::types::Type::Text,
+                        Box::new(e),
+                    ))?;
+                let timestamp = DateTime::from_timestamp_micros(row.get::<_, i64>(1)?)
+                    .ok_or_else(|| duckdb::Error::FromSqlConversionFailure(
+                        1,
+                        duckdb::types::Type::BigInt,
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")),
+                    ))?;
+                let source_id: String = row.get(2)?;
+                Ok((fiber_id, timestamp, source_id))
+            })?;
+
+            let mut result: std::collections::HashMap<Uuid, Vec<(DateTime<Utc>, String)>> = std::collections::HashMap::new();
+            for row in rows {
+                let (fiber_id, timestamp, source_id) = row?;
+                result.entry(fiber_id).or_default().push((timestamp, source_id));
+            }
+
+            Ok(result)
+        })
+        .await
+        .map_err(|e| StorageError::Database(format!("Task join error: {}", e)))?
+    }
 }
 
 // Helper function to parse a row into StoredLog
