@@ -2184,7 +2184,8 @@ body {
    ================================================================== */
 
 .working-set-panel {
-    width: 35%;
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--border-color);

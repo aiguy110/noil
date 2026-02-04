@@ -642,12 +642,21 @@ class NoilApp {
         this.logViewer.highlightLog(null);
         this.timeline.clearSelectedLogTimestamp();
 
+        this.navHistory = [];
+        this.navHistoryPosition = -1;
+        this.updateNavigationUI();
+
         // Restore full filtered timeline
         await this.filterFibers();
 
         // Hide UI elements
         document.getElementById('nav-clear-selection').style.display = 'none';
         document.getElementById('nav-other-fibers-section').style.display = 'none';
+
+        const otherFibersList = document.getElementById('nav-other-fibers-list');
+        if (otherFibersList) {
+            otherFibersList.innerHTML = '<p class="empty-message">No other fibers</p>';
+        }
     }
 
     async applyTangledFibers(fibers) {

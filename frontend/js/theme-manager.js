@@ -31,7 +31,18 @@ const THEMES = {
                 'background-color': 'rgba(68, 71, 90, 0.3)'
             },
             '.cm-selectionBackground': {
-                'background-color': '#44475a !important'
+                'background-color': 'rgba(189, 147, 249, 0.5) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(189, 147, 249, 0.5) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(189, 147, 249, 0.5) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(189, 147, 249, 0.5) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#f8f8f2'
@@ -96,7 +107,18 @@ const THEMES = {
                 'background-color': 'rgba(255, 255, 255, 0.05)'
             },
             '.cm-selectionBackground': {
-                'background-color': 'rgba(0, 122, 204, 0.3) !important'
+                'background-color': 'rgba(0, 122, 204, 0.5) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(0, 122, 204, 0.5) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(0, 122, 204, 0.5) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(0, 122, 204, 0.5) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#cccccc'
@@ -161,7 +183,18 @@ const THEMES = {
                 'background-color': 'rgba(255, 255, 255, 0.05)'
             },
             '.cm-selectionBackground': {
-                'background-color': '#49483e !important'
+                'background-color': 'rgba(102, 217, 239, 0.5) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(102, 217, 239, 0.5) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(102, 217, 239, 0.5) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(102, 217, 239, 0.5) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#f8f8f0'
@@ -226,7 +259,18 @@ const THEMES = {
                 'background-color': 'rgba(7, 54, 66, 0.5)'
             },
             '.cm-selectionBackground': {
-                'background-color': '#073642 !important'
+                'background-color': 'rgba(38, 139, 210, 0.5) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(38, 139, 210, 0.5) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(38, 139, 210, 0.5) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(38, 139, 210, 0.5) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#839496'
@@ -291,7 +335,18 @@ const THEMES = {
                 'background-color': 'rgba(0, 0, 0, 0.03)'
             },
             '.cm-selectionBackground': {
-                'background-color': 'rgba(9, 105, 218, 0.2) !important'
+                'background-color': 'rgba(9, 105, 218, 0.4) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(9, 105, 218, 0.4) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(9, 105, 218, 0.4) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(9, 105, 218, 0.4) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#24292f'
@@ -353,7 +408,18 @@ const THEMES = {
                 'background-color': '#2c323c'
             },
             '.cm-selectionBackground': {
-                'background-color': '#3e4451 !important'
+                'background-color': 'rgba(97, 175, 239, 0.5) !important'
+            },
+            '.cm-selectionLayer .cm-selectionBackground': {
+                'background-color': 'rgba(97, 175, 239, 0.5) !important'
+            },
+            '.cm-line ::selection': {
+                'background-color': 'rgba(97, 175, 239, 0.5) !important',
+                'color': 'inherit'
+            },
+            '.cm-line ::-moz-selection': {
+                'background-color': 'rgba(97, 175, 239, 0.5) !important',
+                'color': 'inherit'
             },
             '.cm-cursor': {
                 'border-left-color': '#528bff'
@@ -386,11 +452,17 @@ const THEMES = {
             '.cm-lineNumbers .cm-gutterElement': {
                 'color': '#5c6370'
             },
+            '.ͼb': {
+                'color': '#e5c07b'
+            },
             '.ͼc': {
                 'color': '#61dafb'
             },
             '.ͼ5': {
                 'color': '#c678dd'
+            },
+            '.ͼe': {
+                'color': '#98c379'
             }
         }
     }
