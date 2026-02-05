@@ -119,10 +119,16 @@ jobs:
         with:
           path: artifacts
 
+      - name: Rename artifacts for release
+        if: steps.tag_check.outputs.is_release == 'true'
+        run: |
+          mv artifacts/noil-linux-amd64/noil artifacts/noil-linux-amd64
+          mv artifacts/noil-linux-glibc-2.17-amd64/noil artifacts/noil-linux-glibc-2.17-amd64
+
       - name: Create release
         if: steps.tag_check.outputs.is_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/noil-linux-amd64/noil
-            artifacts/noil-linux-glibc-2.17-amd64/noil
+            artifacts/noil-linux-amd64
+            artifacts/noil-linux-glibc-2.17-amd64
