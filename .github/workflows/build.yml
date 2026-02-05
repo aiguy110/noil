@@ -9,7 +9,6 @@ jobs:
   build-modern:
     name: Build (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: github.ref_type != 'tag'
     steps:
       - name: Check release tag
         id: tag_check
@@ -44,7 +43,6 @@ jobs:
   build-glibc-2-17:
     name: Build (glibc 2.17)
     runs-on: ubuntu-latest
-    if: github.ref_type != 'tag'
     steps:
       - name: Check release tag
         id: tag_check
