@@ -52,11 +52,11 @@ jobs:
           export DUCKDB_EXPLICIT_PLATFORM=linux_amd64
           cat >/tmp/noil-cxx-wrapper <<'EOF'
           #!/bin/sh
-          exec c++ -D_GLIBCXX_USE_CXX11_ABI=1 -DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64" "$@"
+          exec c++ -D_GLIBCXX_USE_CXX11_ABI=1 -DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64" -DDUCKDB_CUSTOM_PLATFORM="linux_amd64" "$@"
           EOF
           chmod +x /tmp/noil-cxx-wrapper
           export CXX=/tmp/noil-cxx-wrapper
-          export CPPFLAGS='-DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64"'
-          export CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1 -DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64"'
-          export CFLAGS='-DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64"'
+          export CPPFLAGS='-DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64" -DDUCKDB_CUSTOM_PLATFORM="linux_amd64"'
+          export CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1 -DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64" -DDUCKDB_CUSTOM_PLATFORM="linux_amd64"'
+          export CFLAGS='-DDUCKDB_PLATFORM="linux_amd64" -DDUCKDB_EXPLICIT_PLATFORM="linux_amd64" -DDUCKDB_CUSTOM_PLATFORM="linux_amd64"'
           cargo build --locked
