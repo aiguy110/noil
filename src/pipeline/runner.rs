@@ -1,4 +1,4 @@
-use crate::config::types::{Config, OperationMode, StorageConfig};
+use crate::config::types::{Config, StorageConfig};
 use crate::fiber::processor::ProcessResult;
 use crate::fiber::FiberProcessor;
 use crate::source::reader::LogRecord;
@@ -81,7 +81,7 @@ pub async fn run_processor(
     let mut known_sources: HashSet<String> = HashSet::new();
 
     // Determine if we should dynamically add source fiber types
-    let enable_dynamic_source_fibers = config.auto_source_fibers || config.mode == OperationMode::Parent;
+    let enable_dynamic_source_fibers = config.auto_source_fibers || config.has_remote_sources();
 
     info!(
         enable_dynamic_source_fibers = enable_dynamic_source_fibers,
@@ -403,11 +403,10 @@ mod tests {
         );
 
         Config {
-            mode: crate::config::types::OperationMode::Standalone,
             collector: None,
-            parent: None,
+            remote_collectors: None,
             sources,
-            fiber_types,
+            fiber_types: Some(fiber_types),
             auto_source_fibers: true,
             pipeline: PipelineConfig {
                 backpressure: BackpressureConfig {

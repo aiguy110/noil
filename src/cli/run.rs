@@ -1,6 +1,5 @@
 use crate::config::parse::{load_config, load_config_with_yaml};
 use crate::config::reconcile::{reconcile_config_on_startup, ReconcileResult};
-use crate::config::types::OperationMode;
 #[allow(deprecated)]
 use crate::config::version::compute_config_version;
 use crate::fiber::FiberProcessor;
@@ -126,20 +125,18 @@ pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error:
 async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     info!(config_path = %config_path.display(), "Loading configuration");
 
-    // Load config to check mode
+    // Load config to determine capabilities
     let temp_config = load_config(config_path)?;
 
-    // Dispatch based on operation mode
-    match temp_config.mode {
-        crate::config::types::OperationMode::Standalone => {
-            run_standalone_mode(config_path).await
-        }
-        crate::config::types::OperationMode::Collector => {
-            run_collector_mode(config_path).await
-        }
-        crate::config::types::OperationMode::Parent => {
-            run_parent_mode(config_path).await
-        }
+    // Dispatch based on capabilities
+    // TODO: Phase 3 will unify these into a single run_pipeline function.
+    // For now, dispatch to the existing mode-specific functions based on config capabilities.
+    if temp_config.has_remote_sources() {
+        run_parent_mode(config_path).await
+    } else if temp_config.has_collector_serving() {
+        run_collector_mode(config_path).await
+    } else {
+        run_standalone_mode(config_path).await
     }
 }
 
@@ -204,7 +201,7 @@ async fn run_parent_mode(config_path: &PathBuf) -> Result<(), RunError> {
 
     // In parent mode, add auto-generated source fiber types for sources from collectors
     // Query database for all source IDs that have sent logs
-    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+    if config.auto_source_fibers || config.has_remote_sources() {
         info!("Adding auto-generated source fiber types from database");
         let source_ids = storage.get_all_source_ids().await
             .map_err(|e| RunError::Storage(e))?;
@@ -504,7 +501,7 @@ async fn run_standalone_mode(config_path: &PathBuf) -> Result<(), RunError> {
         }
     }
     info!(
-        fiber_types = config.fiber_types.len(),
+        fiber_types = config.fiber_types_or_empty().len(),
         open_fibers = fiber_processor.total_open_fibers(),
         "Fiber processor initialized"
     );

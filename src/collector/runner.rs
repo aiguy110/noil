@@ -3,7 +3,7 @@ use crate::collector::batch::LogBatch;
 use crate::collector::batch_buffer::{BatchBuffer, BufferError, BufferStats};
 use crate::collector::epoch_batcher::EpochBatcher;
 use crate::collector::server::start_server;
-use crate::config::types::{CollectorConfig, Config};
+use crate::config::types::{CollectorServingConfig, Config};
 use crate::sequencer::merge::{run_sequencer, SequencerRunConfig};
 use crate::source::reader::{LogRecord, SourceReader};
 use crate::storage::checkpoint::{
@@ -45,7 +45,7 @@ pub enum CollectorError {
 
 pub struct CollectorRunner {
     config: Config,
-    collector_config: CollectorConfig,
+    collector_config: CollectorServingConfig,
     config_version: u64,
 }
 
@@ -330,9 +330,10 @@ impl CollectorRunner {
             });
         }
 
-        // Parse listen address
+        // Parse listen address (uses web.listen since collector protocol is served on same port)
         let listen_addr: std::net::SocketAddr = self
-            .collector_config
+            .config
+            .web
             .listen
             .parse()
             .map_err(|e| CollectorError::Config(format!("Invalid listen address: {}", e)))?;

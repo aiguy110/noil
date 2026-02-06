@@ -15,10 +15,7 @@ async fn test_collector_http_status_endpoint() {
     // Create a collector config
     let config_content = format!(
         r#"
-mode: collector
-
 collector:
-  listen: "127.0.0.1:17105"
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -62,7 +59,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: "127.0.0.1:17106"
+  listen: "127.0.0.1:17105"
 "#,
         temp_file.path().display()
     );
@@ -127,10 +124,7 @@ async fn test_collector_batches_endpoint() {
     // Create a collector config
     let config_content = format!(
         r#"
-mode: collector
-
 collector:
-  listen: "127.0.0.1:17107"
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -172,7 +166,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: "127.0.0.1:17108"
+  listen: "127.0.0.1:17107"
 "#,
         temp_file.path().display()
     );
@@ -242,10 +236,7 @@ async fn test_collector_acknowledge_endpoint() {
     // Create a collector config
     let config_content = format!(
         r#"
-mode: collector
-
 collector:
-  listen: "127.0.0.1:17109"
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -287,7 +278,7 @@ storage:
   flush_interval_seconds: 5
 
 web:
-  listen: "127.0.0.1:17110"
+  listen: "127.0.0.1:17109"
 "#,
         temp_file.path().display()
     );

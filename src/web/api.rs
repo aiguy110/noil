@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::config::diff::create_diff_with_context;
-use crate::config::types::{Config, FiberTypeConfig, OperationMode};
+use crate::config::types::{Config, FiberTypeConfig};
 use crate::config::version::compute_config_hash;
 use crate::fiber::processor::FiberProcessor;
 use crate::reprocessing::{ReprocessProgress, ReprocessState, ReprocessStatus};
@@ -772,7 +772,7 @@ pub async fn list_fiber_types(
     // This ensures fiber types are visible even before any fibers are created
     let config = state.config.read().await;
     let mut metadata: Vec<FiberTypeMetadata> = config
-        .fiber_types
+        .fiber_types_or_empty()
         .iter()
         .map(|(name, ft)| FiberTypeMetadata {
             name: name.clone(),
@@ -780,17 +780,17 @@ pub async fn list_fiber_types(
         })
         .collect();
 
-    // In parent mode (or when auto_source_fibers is enabled),
+    // When auto_source_fibers is enabled or remote sources are configured,
     // also include source fiber types for all sources that have sent logs.
     // This ensures that source fibers from collectors are visible in the UI,
-    // even if they're not explicitly defined in the parent config.
-    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+    // even if they're not explicitly defined in the config.
+    if config.auto_source_fibers || config.has_remote_sources() {
         // Get all unique source IDs from the database
         let source_ids = state.storage.get_all_source_ids().await?;
 
         // Create synthetic source fiber metadata for sources not already in config
         for source_id in source_ids {
-            if !config.fiber_types.contains_key(&source_id) {
+            if !config.fiber_types_or_empty().contains_key(&source_id) {
                 metadata.push(FiberTypeMetadata {
                     name: source_id,
                     is_source_fiber: true,
@@ -1082,7 +1082,7 @@ pub async fn get_fiber_type(
 ) -> Result<Json<FiberTypeResponse>, ApiError> {
     let config = state.config.read().await;
     let fiber_type = config
-        .fiber_types
+        .fiber_types_or_empty()
         .get(&name)
         .ok_or_else(|| ApiError::NotFound(format!("Fiber type not found: {}", name)))?;
 
@@ -1126,7 +1126,7 @@ pub async fn get_fiber_type_from_version(
         .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
 
     let is_source_fiber = config
-        .fiber_types
+        .fiber_types_or_empty()
         .get(&name)
         .map(|ft| ft.is_source_fiber)
         .unwrap_or(false);
@@ -1146,7 +1146,7 @@ pub async fn update_fiber_type(
 ) -> Result<Json<UpdateFiberTypeResponse>, ApiError> {
     // 1. Check if this is an auto-generated source fiber
     let config = state.config.read().await;
-    if let Some(fiber_type) = config.fiber_types.get(&original_name) {
+    if let Some(fiber_type) = config.fiber_types_or_empty().get(&original_name) {
         if fiber_type.is_source_fiber {
             return Err(ApiError::BadRequest(
                 "Cannot edit auto-generated source fiber types. These are automatically created from sources.".to_string()
@@ -1196,7 +1196,7 @@ pub async fn update_fiber_type(
         // Check if target name already exists
         let temp_config: Config = serde_yaml::from_str(&current_yaml)
             .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
-        if temp_config.fiber_types.contains_key(&new_name) {
+        if temp_config.fiber_types_or_empty().contains_key(&new_name) {
             return Err(ApiError::BadRequest(format!(
                 "Cannot rename: fiber type '{}' already exists",
                 new_name
@@ -1221,11 +1221,12 @@ pub async fn update_fiber_type(
     *config_yaml_guard = updated_yaml.clone();
     let mut config = state.config.write().await;
 
+    let ft = config.fiber_types.get_or_insert_with(HashMap::new);
     if new_name != original_name {
         // Remove old name, add new name
-        config.fiber_types.remove(&original_name);
+        ft.remove(&original_name);
     }
-    config.fiber_types.insert(new_name.clone(), new_fiber_type);
+    ft.insert(new_name.clone(), new_fiber_type);
 
     // 8. Write new config version to database (DB-only, no file write)
     // Check if this version already exists (same YAML hash)
@@ -1343,7 +1344,7 @@ pub async fn delete_fiber_type(
 ) -> Result<Json<SuccessResponse>, ApiError> {
     // 1. Check if fiber type exists
     let config = state.config.read().await;
-    if !config.fiber_types.contains_key(&name) {
+    if !config.fiber_types_or_empty().contains_key(&name) {
         return Err(ApiError::NotFound(format!(
             "Fiber type not found: {}",
             name
@@ -1351,7 +1352,7 @@ pub async fn delete_fiber_type(
     }
 
     // Check if it's a source fiber (auto-generated)
-    if let Some(fiber_type) = config.fiber_types.get(&name) {
+    if let Some(fiber_type) = config.fiber_types_or_empty().get(&name) {
         if fiber_type.is_source_fiber {
             return Err(ApiError::BadRequest(
                 "Cannot delete auto-generated source fiber types".to_string(),
@@ -1377,7 +1378,9 @@ pub async fn delete_fiber_type(
     // 6. Update in-memory state
     *config_yaml_guard = updated_yaml.clone();
     let mut config = state.config.write().await;
-    config.fiber_types.remove(&name);
+    if let Some(ft) = config.fiber_types.as_mut() {
+        ft.remove(&name);
+    }
 
     // 7. Write new config version to database (DB-only, no file write)
     // Check if this version already exists (same YAML hash)
@@ -1420,7 +1423,7 @@ pub async fn create_fiber_type(
 
     // 2. Check if fiber type already exists
     let config = state.config.read().await;
-    if config.fiber_types.contains_key(&req.name) {
+    if config.fiber_types_or_empty().contains_key(&req.name) {
         return Err(ApiError::Conflict(format!(
             "Fiber type '{}' already exists",
             req.name
@@ -1453,7 +1456,7 @@ pub async fn create_fiber_type(
     // 7. Update in-memory state
     *config_yaml_guard = updated_yaml.clone();
     let mut config = state.config.write().await;
-    config.fiber_types.insert(req.name.clone(), new_fiber_type);
+    config.fiber_types.get_or_insert_with(HashMap::new).insert(req.name.clone(), new_fiber_type);
 
     // 8. Write new config version to database (DB-only, no file write)
     // Check if this version already exists (same YAML hash)
@@ -1514,7 +1517,7 @@ pub async fn start_reprocessing(
 
     let time_range = req.time_range.map(|r| (r.start, r.end));
 
-    if config.auto_source_fibers || config.mode == OperationMode::Parent {
+    if config.auto_source_fibers || config.has_remote_sources() {
         let source_ids = state.storage.get_all_source_ids().await?;
         if !source_ids.is_empty() {
             crate::config::parse::add_auto_source_fibers_from_list(&mut config, &source_ids);
@@ -1706,11 +1709,10 @@ pub async fn test_working_set(
     temp_fiber_types.insert(fiber_type_name.clone(), fiber_type_config);
 
     let temp_config = Config {
-        mode: state.config.read().await.mode,
         collector: None,
-        parent: None,
+        remote_collectors: None,
         sources: HashMap::new(), // Not needed for test processing
-        fiber_types: temp_fiber_types,
+        fiber_types: Some(temp_fiber_types),
         auto_source_fibers: false,
         pipeline: state.config.read().await.pipeline.clone(),
         sequencer: state.config.read().await.sequencer.clone(),

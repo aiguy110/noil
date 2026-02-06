@@ -1,13 +1,10 @@
-use noil::config::types::{BufferStrategy, Config, OperationMode};
+use noil::config::types::{BufferStrategy, Config};
 use std::time::Duration;
 
 #[test]
 fn test_collector_config_parsing() {
     let yaml = r#"
-mode: collector
-
 collector:
-  listen: 127.0.0.1:7105
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -56,12 +53,12 @@ web:
 
     let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse collector config");
 
-    assert_eq!(config.mode, OperationMode::Collector);
     assert!(config.collector.is_some());
-    assert!(config.parent.is_none());
+    assert!(config.remote_collectors.is_none());
+    assert!(config.has_collector_serving());
+    assert!(!config.has_remote_sources());
 
     let collector = config.collector.unwrap();
-    assert_eq!(collector.listen, "127.0.0.1:7105");
     assert_eq!(collector.epoch_duration, Duration::from_secs(10));
     assert_eq!(collector.buffer.max_epochs, 100);
     assert_eq!(collector.buffer.strategy, BufferStrategy::Block);
@@ -71,12 +68,10 @@ web:
 }
 
 #[test]
-fn test_parent_config_parsing() {
+fn test_remote_collectors_config_parsing() {
     let yaml = r#"
-mode: parent
-
-parent:
-  collectors:
+remote_collectors:
+  endpoints:
     - id: collector1
       url: http://192.168.1.10:7105
       retry_interval: 5s
@@ -127,19 +122,19 @@ web:
   listen: 127.0.0.1:7104
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse parent config");
+    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse remote_collectors config");
 
-    assert_eq!(config.mode, OperationMode::Parent);
-    assert!(config.parent.is_some());
+    assert!(config.has_remote_sources());
+    assert!(config.remote_collectors.is_some());
     assert!(config.collector.is_none());
 
-    let parent = config.parent.unwrap();
-    assert_eq!(parent.collectors.len(), 2);
-    assert_eq!(parent.collectors[0].id, "collector1");
-    assert_eq!(parent.collectors[0].url, "http://192.168.1.10:7105");
-    assert_eq!(parent.collectors[0].retry_interval, Duration::from_secs(5));
-    assert_eq!(parent.collectors[0].timeout, Duration::from_secs(30));
-    assert_eq!(parent.poll_interval, Duration::from_secs(1));
+    let remote = config.remote_collectors.unwrap();
+    assert_eq!(remote.endpoints.len(), 2);
+    assert_eq!(remote.endpoints[0].id, "collector1");
+    assert_eq!(remote.endpoints[0].url, "http://192.168.1.10:7105");
+    assert_eq!(remote.endpoints[0].retry_interval, Duration::from_secs(5));
+    assert_eq!(remote.endpoints[0].timeout, Duration::from_secs(30));
+    assert_eq!(remote.poll_interval, Duration::from_secs(1));
 }
 
 #[test]
@@ -173,19 +168,19 @@ web:
 
     let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse standalone config");
 
-    // Mode should default to Standalone
-    assert_eq!(config.mode, OperationMode::Standalone);
+    // No mode field - capabilities determined by config sections
     assert!(config.collector.is_none());
-    assert!(config.parent.is_none());
+    assert!(config.remote_collectors.is_none());
+    assert!(!config.has_collector_serving());
+    assert!(!config.has_remote_sources());
+    assert!(config.stores_logs()); // fiber_types: {} → Some({})
 }
 
 #[test]
 fn test_buffer_strategy_parsing() {
     // Test block strategy
     let yaml_block = r#"
-mode: collector
 collector:
-  listen: 127.0.0.1:7105
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -207,9 +202,7 @@ web: { listen: 127.0.0.1:7104 }
 
     // Test drop_oldest strategy
     let yaml_drop = r#"
-mode: collector
 collector:
-  listen: 127.0.0.1:7105
   epoch_duration: 10s
   buffer:
     max_epochs: 100
@@ -231,9 +224,7 @@ web: { listen: 127.0.0.1:7104 }
 
     // Test wait_forever strategy
     let yaml_wait = r#"
-mode: collector
 collector:
-  listen: 127.0.0.1:7105
   epoch_duration: 10s
   buffer:
     max_epochs: 100

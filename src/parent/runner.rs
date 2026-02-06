@@ -1,4 +1,4 @@
-use crate::config::types::{CollectorEndpoint, Config, ParentConfig};
+use crate::config::types::{CollectorEndpoint, Config, RemoteCollectorsConfig};
 use crate::fiber::FiberProcessor;
 use crate::parent::collector_client::CollectorClient;
 use crate::parent::collector_stream::CollectorStream;
@@ -56,21 +56,21 @@ struct AcknowledgmentState {
 
 pub struct ParentRunner {
     config: Config,
-    parent_config: ParentConfig,
+    remote_collectors_config: RemoteCollectorsConfig,
     config_version: u64,
 }
 
 impl ParentRunner {
     pub fn new(config: Config, config_version: u64) -> Result<Self, ParentError> {
-        let parent_config = config
-            .parent
+        let remote_collectors_config = config
+            .remote_collectors
             .as_ref()
-            .ok_or_else(|| ParentError::Config("parent config section missing".to_string()))?
+            .ok_or_else(|| ParentError::Config("remote_collectors config section missing".to_string()))?
             .clone();
 
         Ok(Self {
             config,
-            parent_config,
+            remote_collectors_config,
             config_version,
         })
     }
@@ -123,7 +123,7 @@ impl ParentRunner {
         // Create collector clients and streams
         let mut collector_streams = Vec::new();
 
-        for endpoint in &self.parent_config.collectors {
+        for endpoint in &self.remote_collectors_config.endpoints {
             info!(
                 collector_id = %endpoint.id,
                 url = %endpoint.url,
@@ -330,7 +330,7 @@ impl ParentRunner {
             }
 
             // Flush acknowledgments after drain to advance checkpoints.
-            flush_pending_acks(&self.parent_config.collectors, Arc::clone(&ack_state)).await;
+            flush_pending_acks(&self.remote_collectors_config.endpoints, Arc::clone(&ack_state)).await;
 
             // Save final checkpoint after drain.
             if let Err(e) = save_parent_checkpoint_once(
@@ -353,7 +353,7 @@ impl ParentRunner {
             handle.await?;
         }
 
-        flush_pending_acks(&self.parent_config.collectors, Arc::clone(&ack_state)).await;
+        flush_pending_acks(&self.remote_collectors_config.endpoints, Arc::clone(&ack_state)).await;
 
         if let Err(e) = save_parent_checkpoint_once(
             storage.clone(),
@@ -381,7 +381,7 @@ impl ParentRunner {
 
         for mut stream in streams.drain(..) {
             let tx = sequencer_tx.clone();
-            let poll_interval = self.parent_config.poll_interval;
+            let poll_interval = self.remote_collectors_config.poll_interval;
             let ack_state_clone = Arc::clone(&ack_state);
 
             let handle = tokio::spawn(async move {
@@ -480,7 +480,7 @@ impl ParentRunner {
         _storage: Arc<dyn Storage>,
         ack_state: Arc<RwLock<AcknowledgmentState>>,
     ) -> JoinHandle<()> {
-        let collectors = self.parent_config.collectors.clone();
+        let collectors = self.remote_collectors_config.endpoints.clone();
 
         tokio::spawn(async move {
             info!("Acknowledgment task started");

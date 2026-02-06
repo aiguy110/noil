@@ -14,42 +14,26 @@ pub fn init(stdout: bool, mode: Option<&str>, interactive: bool) -> Result<(), B
         };
     }
 
-    let mode = mode.unwrap_or("standalone");
-
-    // Determine which sample config to use based on mode
-    let config_content = match mode {
-        "standalone" => {
-            // Read from samples/sample-config.yml
-            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("samples")
-                .join("sample-config.yml");
-            fs::read_to_string(&sample_path)
-                .map_err(|e| format!("Failed to read sample config: {}", e))?
-        }
-        "collector" => {
-            // Read from samples/collector-config.yml
-            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("samples")
-                .join("collector-config.yml");
-            fs::read_to_string(&sample_path)
-                .map_err(|e| format!("Failed to read collector config: {}", e))?
-        }
-        "parent" => {
-            // Read from samples/parent-config.yml
-            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("samples")
-                .join("parent-config.yml");
-            fs::read_to_string(&sample_path)
-                .map_err(|e| format!("Failed to read parent config: {}", e))?
-        }
-        _ => {
+    // TODO: Phase 6 will remove --mode entirely and use a single unified sample config.
+    // For now, map mode values to existing sample files for backwards compatibility.
+    let sample_file = match mode.unwrap_or("standalone") {
+        "standalone" => "sample-config.yml",
+        "collector" => "collector-config.yml",
+        "parent" => "parent-config.yml",
+        other => {
             return Err(format!(
                 "Invalid mode '{}'. Valid modes are: standalone, collector, parent",
-                mode
+                other
             )
             .into());
         }
     };
+
+    let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("samples")
+        .join(sample_file);
+    let config_content = fs::read_to_string(&sample_path)
+        .map_err(|e| format!("Failed to read sample config: {}", e))?;
 
     write_config(&config_content, stdout)
 }

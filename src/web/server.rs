@@ -45,7 +45,7 @@ pub async fn run_server(
     // Extract fiber_types from config for backwards compatibility
     let fiber_types = {
         let config_guard = config.read().await;
-        Arc::new(config_guard.fiber_types.clone())
+        Arc::new(config_guard.fiber_types_or_empty().clone())
     };
 
     let app_state = AppState {

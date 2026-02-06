@@ -1,4 +1,4 @@
-use noil::config::types::{CollectorEndpoint, OperationMode, Config};
+use noil::config::types::{CollectorEndpoint, Config};
 use noil::parent::collector_client::CollectorClient;
 use noil::parent::collector_stream::CollectorStream;
 use std::time::Duration;
@@ -103,12 +103,10 @@ fn test_stream_close() {
 // and client/stream creation.
 
 #[test]
-fn test_parent_config_parsing() {
+fn test_remote_collectors_config_parsing() {
     let yaml = r#"
-mode: parent
-
-parent:
-  collectors:
+remote_collectors:
+  endpoints:
     - id: collector1
       url: http://192.168.1.10:7105
       retry_interval: 5s
@@ -145,12 +143,12 @@ web:
 "#;
 
     let config: Config = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(config.mode, OperationMode::Parent);
+    assert!(config.has_remote_sources());
 
-    let parent = config.parent.unwrap();
-    assert_eq!(parent.collectors.len(), 2);
-    assert_eq!(parent.collectors[0].id, "collector1");
-    assert_eq!(parent.collectors[0].url, "http://192.168.1.10:7105");
-    assert_eq!(parent.collectors[1].id, "collector2");
-    assert_eq!(parent.poll_interval, Duration::from_secs(1));
+    let remote = config.remote_collectors.unwrap();
+    assert_eq!(remote.endpoints.len(), 2);
+    assert_eq!(remote.endpoints[0].id, "collector1");
+    assert_eq!(remote.endpoints[0].url, "http://192.168.1.10:7105");
+    assert_eq!(remote.endpoints[1].id, "collector2");
+    assert_eq!(remote.poll_interval, Duration::from_secs(1));
 }

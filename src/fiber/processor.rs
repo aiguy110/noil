@@ -526,7 +526,7 @@ impl FiberProcessor {
     pub fn from_config(config: &Config, config_version: u64) -> Result<Self, RuleError> {
         let mut processors = HashMap::new();
 
-        for (name, fiber_config) in &config.fiber_types {
+        for (name, fiber_config) in config.fiber_types_or_empty() {
             let compiled = CompiledFiberType::from_config(name, fiber_config)?;
             let processor = FiberTypeProcessor::new(compiled, config_version);
             processors.insert(name.clone(), processor);

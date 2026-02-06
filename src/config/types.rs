@@ -1,23 +1,20 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_mode")]
-    pub mode: OperationMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collector: Option<CollectorServingConfig>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub collector: Option<CollectorConfig>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent: Option<ParentConfig>,
+    pub remote_collectors: Option<RemoteCollectorsConfig>,
 
     #[serde(default)]
     pub sources: HashMap<String, SourceConfig>,
-    #[serde(default)]
-    pub fiber_types: HashMap<String, FiberTypeConfig>,
+    #[serde(default, deserialize_with = "deserialize_fiber_types")]
+    pub fiber_types: Option<HashMap<String, FiberTypeConfig>>,
     #[serde(default = "default_auto_source_fibers")]
     pub auto_source_fibers: bool,
     pub pipeline: PipelineConfig,
@@ -26,26 +23,73 @@ pub struct Config {
     pub web: WebConfig,
 }
 
+/// Custom deserializer for fiber_types:
+/// - Key absent → None (no log storage)
+/// - `fiber_types:` (null) → Some({}) (store logs, no rules yet)
+/// - `fiber_types: {}` → Some({}) (store logs, no rules yet)
+/// - `fiber_types:` with entries → Some({...})
+fn deserialize_fiber_types<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, FiberTypeConfig>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<Option<HashMap<String, FiberTypeConfig>>> =
+        Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(Some(HashMap::new())), // null value → Some({})
+        Some(None) => Ok(Some(HashMap::new())), // explicit null
+        Some(Some(map)) => Ok(Some(map)),
+    }
+}
+
+impl Config {
+    /// Returns true if local file sources are configured
+    pub fn has_local_sources(&self) -> bool {
+        !self.sources.is_empty()
+    }
+
+    /// Returns true if remote collector endpoints are configured
+    pub fn has_remote_sources(&self) -> bool {
+        self.remote_collectors
+            .as_ref()
+            .map_or(false, |c| !c.endpoints.is_empty())
+    }
+
+    /// Returns true if collector serving is enabled
+    pub fn has_collector_serving(&self) -> bool {
+        self.collector.is_some()
+    }
+
+    /// Returns true if log storage and fiber processing are enabled
+    pub fn stores_logs(&self) -> bool {
+        self.fiber_types.is_some()
+    }
+
+    /// Returns a reference to fiber_types, or an empty map if None
+    pub fn fiber_types_or_empty(&self) -> &HashMap<String, FiberTypeConfig> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, FiberTypeConfig>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.fiber_types.as_ref().unwrap_or(&EMPTY)
+    }
+}
+
 fn default_auto_source_fibers() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OperationMode {
-    Standalone,
-    Collector,
-    Parent,
-}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteCollectorsConfig {
+    pub endpoints: Vec<CollectorEndpoint>,
 
-fn default_mode() -> OperationMode {
-    OperationMode::Standalone
+    #[serde(with = "humantime_serde")]
+    pub poll_interval: Duration,
+
+    pub backpressure: BackpressureConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CollectorConfig {
-    pub listen: String,
-
+pub struct CollectorServingConfig {
     #[serde(with = "humantime_serde")]
     pub epoch_duration: Duration,
 
@@ -112,16 +156,6 @@ impl Default for ErrorConfig {
             on_parse_error: ParseErrorStrategy::Drop,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParentConfig {
-    pub collectors: Vec<CollectorEndpoint>,
-
-    #[serde(with = "humantime_serde")]
-    pub poll_interval: Duration,
-
-    pub backpressure: BackpressureConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
