@@ -890,6 +890,9 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
     let web_version = Arc::clone(&shared_version);
     let web_reprocess_state = Arc::clone(&shared_reprocess_state);
     let web_config_path = config_path.clone();
+    // Extract collector API state for the web server (if serving collector protocol)
+    let web_collector_state = collector_state.as_ref().map(|cs| Arc::clone(&cs.api_state));
+
     let web_handle = tokio::spawn(async move {
         run_server(
             web_storage,
@@ -901,6 +904,7 @@ async fn run_pipeline(config_path: &PathBuf) -> Result<(), RunError> {
             web_shared_config_yaml,
             web_config,
             web_shutdown_rx,
+            web_collector_state,
         )
         .await
         .map_err(|e| RunError::WebServer(e.to_string()))
@@ -1158,7 +1162,6 @@ struct CollectorSourceState {
 
 /// Intermediate state for collector serving setup
 struct CollectorServingState {
-    #[allow(dead_code)] // Used in Phase 4 when collector is merged into web server
     api_state: Arc<CollectorState>,
     batcher: Arc<Mutex<EpochBatcher>>,
     buffer: Arc<Mutex<BatchBuffer>>,

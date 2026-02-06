@@ -4,6 +4,9 @@ use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 use tower_http::services::ServeDir;
 
+use crate::collector::api::{
+    acknowledge, get_batches, get_checkpoint, get_status, rewind, CollectorState,
+};
 use crate::config::{types::Config, WebConfig};
 use crate::fiber::processor::FiberProcessor;
 use crate::reprocessing::ReprocessState;
@@ -30,7 +33,10 @@ async fn serve_index_html() -> impl IntoResponse {
     }
 }
 
-/// Start the web server with the given storage backend and configuration
+/// Start the web server with the given storage backend and configuration.
+///
+/// When `collector_state` is `Some`, the `/collector/*` routes are mounted for
+/// serving log batches to parent instances.
 pub async fn run_server(
     storage: Arc<dyn Storage>,
     fiber_processor: Arc<RwLock<FiberProcessor>>,
@@ -41,6 +47,7 @@ pub async fn run_server(
     config_yaml: Arc<RwLock<String>>,
     web_config: WebConfig,
     mut shutdown_rx: watch::Receiver<bool>,
+    collector_state: Option<Arc<CollectorState>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Extract fiber_types from config for backwards compatibility
     let fiber_types = {
@@ -88,6 +95,22 @@ pub async fn run_server(
         .route("/api/reprocess/cancel", post(cancel_reprocessing))
         .with_state(app_state);
 
+    // Collector protocol routes (conditionally mounted)
+    let collector_routes = if let Some(state) = collector_state {
+        tracing::info!("Mounting collector protocol routes at /collector/*");
+        Some(
+            Router::new()
+                .route("/collector/status", get(get_status))
+                .route("/collector/batches", get(get_batches))
+                .route("/collector/acknowledge", post(acknowledge))
+                .route("/collector/rewind", post(rewind))
+                .route("/collector/checkpoint", get(get_checkpoint))
+                .with_state(state),
+        )
+    } else {
+        None
+    };
+
     // Serve static frontend files
     let frontend_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend");
     let serve_dir = ServeDir::new(frontend_dir.clone());
@@ -98,10 +121,12 @@ pub async fn run_server(
         .route("/viewer", get(serve_index_html))
         .route("/fiber-rules", get(serve_index_html));
 
-    // Combine routes: API first, then frontend routes, then static files
-    let app = api_routes
-        .merge(frontend_routes)
-        .fallback_service(serve_dir);
+    // Combine routes: API first, then collector (if any), then frontend routes, then static files
+    let mut app = api_routes.merge(frontend_routes);
+    if let Some(routes) = collector_routes {
+        app = app.merge(routes);
+    }
+    let app = app.fallback_service(serve_dir);
 
     let listener = tokio::net::TcpListener::bind(&web_config.listen).await?;
     tracing::info!("Web server listening on {}", web_config.listen);
