@@ -30,10 +30,12 @@ enum ConfigAction {
 
         #[arg(
             long,
-            default_value = "standalone",
             help = "Config mode: standalone, collector, or parent"
         )]
-        mode: String,
+        mode: Option<String>,
+
+        #[arg(long, help = "Interactively configure sources and settings")]
+        interactive: bool,
     },
     Validate,
 }
@@ -61,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             noil::cli::run::run(config_path).await?;
         }
         Some(Commands::Config { action }) => match action {
-            ConfigAction::Init { stdout, mode } => {
-                noil::cli::config::init(stdout, &mode)?;
+            ConfigAction::Init { stdout, mode, interactive } => {
+                noil::cli::config::init(stdout, mode.as_deref(), interactive)?;
             }
             ConfigAction::Validate => {
                 noil::cli::config::validate(config_path)?;

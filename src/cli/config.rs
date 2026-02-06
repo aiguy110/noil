@@ -1,7 +1,21 @@
+use dialoguer::Input;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn init(stdout: bool, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init(stdout: bool, mode: Option<&str>, interactive: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if interactive {
+        let result = crate::cli::interactive::run_interactive(mode, stdout)?;
+        return match result.output_path {
+            Some(path) => write_config_interactive(&result.yaml, path),
+            None => {
+                print!("{}", result.yaml);
+                Ok(())
+            }
+        };
+    }
+
+    let mode = mode.unwrap_or("standalone");
+
     // Determine which sample config to use based on mode
     let config_content = match mode {
         "standalone" => {
@@ -37,6 +51,10 @@ pub fn init(stdout: bool, mode: &str) -> Result<(), Box<dyn std::error::Error>> 
         }
     };
 
+    write_config(&config_content, stdout)
+}
+
+fn write_config(config_content: &str, stdout: bool) -> Result<(), Box<dyn std::error::Error>> {
     if stdout {
         print!("{}", config_content);
         Ok(())
@@ -85,6 +103,94 @@ pub fn init(stdout: bool, mode: &str) -> Result<(), Box<dyn std::error::Error>> 
 
         println!("Config file written to {}", config_path.display());
         Ok(())
+    }
+}
+
+fn write_config_interactive(config_content: &str, mut path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        // Check if file already exists
+        if path.exists() {
+            eprintln!("File already exists at {}", path.display());
+
+            let options = &["Overwrite", "Choose a different path", "Print to stdout instead"];
+            let choice = dialoguer::Select::new()
+                .with_prompt("What would you like to do?")
+                .items(options)
+                .default(0)
+                .interact()?;
+
+            match choice {
+                0 => {
+                    // Overwrite - fall through to write
+                }
+                2 => {
+                    print!("{}", config_content);
+                    return Ok(());
+                }
+                _ => {
+                    let path_str: String = Input::new()
+                        .with_prompt("Config file path")
+                        .default(path.display().to_string())
+                        .interact_text()?;
+                    path = PathBuf::from(path_str);
+                    continue;
+                }
+            }
+        }
+
+        // Try to create parent dirs and write
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("Cannot create directory {}: {}", parent.display(), e);
+
+                let options = &["Choose a different path", "Print to stdout instead"];
+                let choice = dialoguer::Select::new()
+                    .with_prompt("What would you like to do?")
+                    .items(options)
+                    .default(0)
+                    .interact()?;
+
+                if choice == 1 {
+                    print!("{}", config_content);
+                    return Ok(());
+                }
+
+                let path_str: String = Input::new()
+                    .with_prompt("Config file path")
+                    .default(path.display().to_string())
+                    .interact_text()?;
+                path = PathBuf::from(path_str);
+                continue;
+            }
+        }
+
+        match fs::write(&path, config_content) {
+            Ok(()) => {
+                println!("Config file written to {}", path.display());
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Cannot write to {}: {}", path.display(), e);
+
+                let options = &["Choose a different path", "Print to stdout instead"];
+                let choice = dialoguer::Select::new()
+                    .with_prompt("What would you like to do?")
+                    .items(options)
+                    .default(0)
+                    .interact()?;
+
+                if choice == 1 {
+                    print!("{}", config_content);
+                    return Ok(());
+                }
+
+                let path_str: String = Input::new()
+                    .with_prompt("Config file path")
+                    .default(path.display().to_string())
+                    .interact_text()?;
+                path = PathBuf::from(path_str);
+            }
+        }
     }
 }
 
