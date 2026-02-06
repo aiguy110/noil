@@ -25,9 +25,17 @@ enum Commands {
 #[derive(Subcommand)]
 enum ConfigAction {
     Init {
-        #[arg(long)]
+        #[arg(long, help = "Print config to stdout instead of writing to file")]
         stdout: bool,
+
+        #[arg(
+            long,
+            default_value = "standalone",
+            help = "Config mode: standalone, collector, or parent"
+        )]
+        mode: String,
     },
+    Validate,
 }
 
 #[tokio::main]
@@ -53,8 +61,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             noil::cli::run::run(config_path).await?;
         }
         Some(Commands::Config { action }) => match action {
-            ConfigAction::Init { stdout } => {
-                noil::cli::config::init(stdout)?;
+            ConfigAction::Init { stdout, mode } => {
+                noil::cli::config::init(stdout, &mode)?;
+            }
+            ConfigAction::Validate => {
+                noil::cli::config::validate(config_path)?;
             }
         },
     }

@@ -1,9 +1,41 @@
-use crate::config::generate::generate_starter_config;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn init(stdout: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let config_content = generate_starter_config();
+pub fn init(stdout: bool, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Determine which sample config to use based on mode
+    let config_content = match mode {
+        "standalone" => {
+            // Read from samples/sample-config.yml
+            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join("sample-config.yml");
+            fs::read_to_string(&sample_path)
+                .map_err(|e| format!("Failed to read sample config: {}", e))?
+        }
+        "collector" => {
+            // Read from samples/collector-config.yml
+            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join("collector-config.yml");
+            fs::read_to_string(&sample_path)
+                .map_err(|e| format!("Failed to read collector config: {}", e))?
+        }
+        "parent" => {
+            // Read from samples/parent-config.yml
+            let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join("parent-config.yml");
+            fs::read_to_string(&sample_path)
+                .map_err(|e| format!("Failed to read parent config: {}", e))?
+        }
+        _ => {
+            return Err(format!(
+                "Invalid mode '{}'. Valid modes are: standalone, collector, parent",
+                mode
+            )
+            .into());
+        }
+    };
 
     if stdout {
         print!("{}", config_content);
@@ -53,5 +85,23 @@ pub fn init(stdout: bool) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Config file written to {}", config_path.display());
         Ok(())
+    }
+}
+
+pub fn validate(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = config_path.ok_or("No config file found. Use --config to specify a path.")?;
+
+    println!("Validating config file: {}", path.display());
+
+    // Load and validate the config
+    match crate::config::load_config(&path) {
+        Ok(_) => {
+            println!("✓ Config is valid");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("✗ Config validation failed:\n{}", e);
+            std::process::exit(1);
+        }
     }
 }
