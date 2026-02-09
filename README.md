@@ -69,23 +69,23 @@ fiber_types: { ... }
 ### Example distributed architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│              Central Data Center                     │
-│                                                       │
-│  ┌─────────────────────────────────────────────┐   │
-│  │         Central Instance                     │   │
-│  │  remote_collectors + fiber_types             │   │
-│  │  • Merges collector streams                  │   │
-│  │  • Fiber processing                          │   │
-│  │  • DuckDB storage                            │   │
-│  │  • Web UI                                    │   │
-│  └──▲───────────────▲────────────────▲─────────┘   │
-│     │               │                │              │
-└─────┼───────────────┼────────────────┼──────────────┘
-      │               │                │
-      │ (HTTP Pull)   │ (HTTP Pull)    │ (HTTP Pull)
-      │               │                │
-┌─────┴────┐    ┌────┴─────┐    ┌────┴─────┐
+┌─────────────────────────────────────────────────┐
+│               Central Data Center               │
+│                                                 │
+│  ┌──────────────────────────────────────────┐   │
+│  │             Central Instance             │   │
+│  │  remote_collectors + fiber_types         │   │
+│  │  • Merges collector streams              │   │
+│  │  • Fiber processing                      │   │
+│  │  • DuckDB storage                        │   │
+│  │  • Web UI                                │   │
+│  └─▲───────────────▲───────────────▲────────┘   │
+│    │               │               │            │
+└────┼───────────────┼───────────────┼────────────┘
+     │               │               │
+     │ (HTTP Pull)   │ (HTTP Pull)   │ (HTTP Pull)
+     │               │               │
+┌────┴─────┐    ┌────┴─────┐    ┌────┴─────┐
 │Collector1│    │Collector2│    │Collector3│
 │ Edge VM  │    │ Edge VM  │    │ Edge VM  │
 │sources + │    │sources + │    │sources + │
