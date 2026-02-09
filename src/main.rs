@@ -28,12 +28,6 @@ enum ConfigAction {
         #[arg(long, help = "Print config to stdout instead of writing to file")]
         stdout: bool,
 
-        #[arg(
-            long,
-            help = "Config mode: standalone, collector, or parent"
-        )]
-        mode: Option<String>,
-
         #[arg(long, help = "Interactively configure sources and settings")]
         interactive: bool,
     },
@@ -63,8 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             noil::cli::run::run(config_path).await?;
         }
         Some(Commands::Config { action }) => match action {
-            ConfigAction::Init { stdout, mode, interactive } => {
-                noil::cli::config::init(stdout, mode.as_deref(), interactive)?;
+            ConfigAction::Init { stdout, interactive } => {
+                noil::cli::config::init(stdout, interactive)?;
             }
             ConfigAction::Validate => {
                 noil::cli::config::validate(config_path)?;

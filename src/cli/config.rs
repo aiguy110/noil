@@ -2,9 +2,9 @@ use dialoguer::Input;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn init(stdout: bool, mode: Option<&str>, interactive: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init(stdout: bool, interactive: bool) -> Result<(), Box<dyn std::error::Error>> {
     if interactive {
-        let result = crate::cli::interactive::run_interactive(mode, stdout)?;
+        let result = crate::cli::interactive::run_interactive(stdout)?;
         return match result.output_path {
             Some(path) => write_config_interactive(&result.yaml, path),
             None => {
@@ -14,24 +14,9 @@ pub fn init(stdout: bool, mode: Option<&str>, interactive: bool) -> Result<(), B
         };
     }
 
-    // TODO: Phase 6 will remove --mode entirely and use a single unified sample config.
-    // For now, map mode values to existing sample files for backwards compatibility.
-    let sample_file = match mode.unwrap_or("standalone") {
-        "standalone" => "sample-config.yml",
-        "collector" => "collector-config.yml",
-        "parent" => "parent-config.yml",
-        other => {
-            return Err(format!(
-                "Invalid mode '{}'. Valid modes are: standalone, collector, parent",
-                other
-            )
-            .into());
-        }
-    };
-
     let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("samples")
-        .join(sample_file);
+        .join("sample-config.yml");
     let config_content = fs::read_to_string(&sample_path)
         .map_err(|e| format!("Failed to read sample config: {}", e))?;
 

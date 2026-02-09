@@ -15,7 +15,6 @@ pub struct InteractiveResult {
 }
 
 pub fn run_interactive(
-    mode: Option<&str>,
     stdout: bool,
 ) -> Result<InteractiveResult, Box<dyn std::error::Error>> {
     // TTY check
@@ -23,25 +22,37 @@ pub fn run_interactive(
         return Err("--interactive requires a terminal (stdin is not a TTY)".into());
     }
 
-    // Mode selection
-    let mode = if let Some(m) = mode {
-        m.to_string()
-    } else {
-        let modes = &["standalone", "collector", "parent"];
-        let selection = Select::new()
-            .with_prompt("Select operation mode")
-            .items(modes)
-            .default(0)
-            .interact()?;
-        modes[selection].to_string()
-    };
+    // Capability questions
+    println!();
+    println!("--- Capability selection ---");
+    println!("Noil capabilities are determined by which config sections are present.");
+    println!();
+
+    let read_local = Confirm::new()
+        .with_prompt("Read local log files?")
+        .default(true)
+        .interact()?;
+
+    let pull_remote = Confirm::new()
+        .with_prompt("Pull logs from remote Noil instances?")
+        .default(false)
+        .interact()?;
+
+    let serve_collector = Confirm::new()
+        .with_prompt("Serve logs to other Noil instances (collector mode)?")
+        .default(false)
+        .interact()?;
+
+    let enable_log_storage = Confirm::new()
+        .with_prompt("Enable log storage and fiber processing?")
+        .default(true)
+        .interact()?;
 
     let mut sources: Vec<SourceEntry> = Vec::new();
-    let mut collector_listen: Option<String> = None;
     let mut collector_endpoints: Vec<CollectorEndpoint> = Vec::new();
 
-    // Source configuration (standalone + collector)
-    if mode != "parent" {
+    // Source configuration
+    if read_local {
         loop {
             println!();
             println!("--- Add a log source ---");
@@ -191,29 +202,18 @@ pub fn run_interactive(
         }
     }
 
-    // Collector listen address (also used as web server address)
-    if mode == "collector" {
-        println!();
-        let listen: String = Input::new()
-            .with_prompt("Collector listen address")
-            .default("0.0.0.0:7105".to_string())
-            .interact_text()?;
-        collector_listen = Some(listen);
-    }
-
-
-    // Parent mode: collector endpoints
-    if mode == "parent" {
+    // Remote collector endpoints
+    if pull_remote {
         loop {
             println!();
-            println!("--- Add a collector endpoint ---");
+            println!("--- Add a remote collector endpoint ---");
 
             let id: String = Input::new()
                 .with_prompt("Collector ID")
                 .interact_text()?;
 
             let url: String = Input::new()
-                .with_prompt("Collector URL (e.g., http://192.168.1.10:7105)")
+                .with_prompt("Collector URL (e.g., http://192.168.1.10:7104)")
                 .interact_text()?;
 
             collector_endpoints.push(CollectorEndpoint { id, url });
@@ -234,30 +234,15 @@ pub fn run_interactive(
     println!();
     println!("--- General settings ---");
 
-    let default_storage = match mode.as_str() {
-        "collector" => "$env{TMPDIR}/noil-collector.duckdb".to_string(),
-        "parent" => "$env{TMPDIR}/noil-parent.duckdb".to_string(),
-        _ => "/var/lib/noil/noil.duckdb".to_string(),
-    };
     let storage_path: String = Input::new()
         .with_prompt("Storage database path")
-        .default(default_storage)
+        .default("/var/lib/noil/noil.duckdb".to_string())
         .interact_text()?;
 
-    let web_listen = if mode == "collector" {
-        // In collector mode, web server shares the collector listen address
-        collector_listen.clone().unwrap_or_else(|| "0.0.0.0:7105".to_string())
-    } else {
-        let default_web = if mode == "parent" {
-            "0.0.0.0:7104".to_string()
-        } else {
-            "127.0.0.1:7104".to_string()
-        };
-        Input::new()
-            .with_prompt("Web server listen address")
-            .default(default_web)
-            .interact_text()?
-    };
+    let web_listen: String = Input::new()
+        .with_prompt("Web server listen address")
+        .default("127.0.0.1:7104".to_string())
+        .interact_text()?;
 
     // Output destination
     let output_path = if stdout {
@@ -285,10 +270,10 @@ pub fn run_interactive(
 
     // Build config
     let config = InteractiveConfig {
-        mode,
         sources,
-        collector_listen,
         collector_endpoints,
+        enable_collector_serving: serve_collector,
+        enable_log_storage,
         storage_path,
         web_listen,
     };
