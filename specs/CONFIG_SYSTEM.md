@@ -394,7 +394,7 @@ match reconcile_config_on_startup(&config_path, &storage).await? {
 | Path resolution | `src/config/mod.rs` | 37-58 | Resolves `~/.config/noil/config.yml`, `/etc/noil/config.yml` |
 | YAML loading | `src/config/parse.rs` | 32-70 | `load_config_with_yaml()` - returns YAML + struct |
 | Validation | `src/config/parse.rs` | 132-399 | Validates sources, regexes, derived attrs |
-| Config structs | `src/config/types.rs` | 1-266 | Deserialized Rust types |
+| Config structs | `src/config/types.rs` | 1-420 | Deserialized Rust types (capability-based, no mode enum) |
 | Versioning | `src/config/version.rs` | 16-26 | SHA-256 hash computation |
 | Reconciliation | `src/config/reconcile.rs` | 34-495 | 3-way merge logic |
 | Diff generation | `src/config/diff.rs` | 1-163 | Unified diff for display |

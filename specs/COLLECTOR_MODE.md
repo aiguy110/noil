@@ -1,4 +1,4 @@
-# Collector Mode Specification
+# Distributed Deployment Specification
 
 ## Table of Contents
 
@@ -15,15 +15,17 @@
 
 ## Overview
 
-Collector mode enables distributed log collection for Noil. Instead of running a full standalone instance with fiber processing and web UI on each log source machine, you can deploy lightweight collectors that read local sources and forward ordered log batches to a central parent instance.
+Noil's distributed deployment capabilities enable log collection across multiple machines. Instead of running a full instance with fiber processing and storage on each log source machine, you can deploy lightweight collector-serving instances that read local sources and forward ordered log batches to a central aggregating instance.
 
-### Why Collector Mode?
+> **Historical note**: These capabilities were originally implemented as separate "collector mode" and "parent mode" operation modes. They have since been unified into a capability-based configuration model where any instance can enable any combination of features. The `collector` and `remote_collectors` config sections replace the old `mode: collector` and `mode: parent` enum.
 
-- **Resource Efficiency**: Collectors use minimal CPU/memory (no fiber processing, no database writes)
-- **Centralized Processing**: All fiber correlation happens on the parent instance
-- **Flexible Reprocessing**: Change fiber rules on parent without touching collectors
-- **Scalability**: Parent can merge streams from dozens of collectors
-- **Network Resilience**: Collectors buffer locally during network issues
+### Why Distributed Deployment?
+
+- **Resource Efficiency**: Edge instances use minimal CPU/memory (no fiber processing, no database writes)
+- **Centralized Processing**: All fiber correlation happens on the aggregating instance
+- **Flexible Reprocessing**: Change fiber rules centrally without touching edge instances
+- **Scalability**: Central instance can merge streams from dozens of collectors
+- **Network Resilience**: Edge instances buffer locally during network issues
 
 ### Deployment Model
 
@@ -32,7 +34,8 @@ Collector mode enables distributed log collection for Noil. Instead of running a
 │                    Data Center / Cloud                   │
 │                                                           │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │              Parent Instance                     │   │
+│  │         Central Instance                         │   │
+│  │  (remote_collectors + fiber_types)               │   │
 │  │  • Merges collector streams                      │   │
 │  │  • Fiber processing                              │   │
 │  │  • DuckDB storage                                │   │
@@ -45,6 +48,8 @@ Collector mode enables distributed log collection for Noil. Instead of running a
       │               │                │
 ┌─────┴────┐    ┌────┴─────┐    ┌────┴─────┐
 │Collector1│    │Collector2│    │Collector3│
+│(sources +│    │(sources +│    │(sources +│
+│collector)│    │collector)│    │collector)│
 │ Edge VM  │    │ Edge VM  │    │ Edge VM  │
 └──────────┘    └──────────┘    └──────────┘
 ```
@@ -53,10 +58,10 @@ Collector mode enables distributed log collection for Noil. Instead of running a
 
 ### Component Diagram
 
-**Collector Mode:**
+**Edge Instance** (sources + collector, no fiber_types):
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                     COLLECTOR MODE                          │
+│              EDGE INSTANCE (collector serving)              │
 │                                                              │
 │  ┌──────────┐   ┌──────────┐                               │
 │  │ Source   │   │ Source   │                               │
@@ -78,21 +83,20 @@ Collector mode enables distributed log collection for Noil. Instead of running a
 │     └────────┬───────┘                                     │
 │              ▼                                              │
 │     ┌────────────────┐                                     │
-│     │  HTTP API      │  (serves batches on request)        │
-│     │  /collector/*  │                                     │
+│     │  Web Server    │  (serves batches on /collector/*    │
+│     │                │   + optional status page)           │
 │     └────────────────┘                                     │
 │                                                              │
-│  Components NOT running:                                    │
-│  • Fiber Processor (deferred to parent)                    │
-│  • Storage Writer (no database)                            │
-│  • Full Web UI (optional: minimal status page)             │
+│  Disabled components (fiber_types absent):                  │
+│  • Fiber Processor                                         │
+│  • Storage Writer (no log storage, checkpoints only)       │
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Parent Mode:**
+**Central Instance** (remote_collectors + fiber_types):
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                      PARENT MODE                            │
+│            CENTRAL INSTANCE (remote_collectors)             │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
 │  │ Collector    │  │ Collector    │  │ Collector    │    │
@@ -135,49 +139,31 @@ Collector mode enables distributed log collection for Noil. Instead of running a
 
 ### Data Flow Sequence
 
-**Collector → Parent Flow:**
+**Edge → Central Flow:**
 
-1. **Source Reading**: Collector's source readers read log files, extract timestamps, handle multiline logs
-2. **Local Sequencing**: Collector's sequencer merges source streams into timestamp order using watermarks
+1. **Source Reading**: Edge instance's source readers read log files, extract timestamps, handle multiline logs
+2. **Local Sequencing**: Edge instance's sequencer merges source streams into timestamp order using watermarks
 3. **Epoch Batching**: Sequencer output is grouped into time-windowed epochs (e.g., 10s windows)
 4. **Buffer Insertion**: Completed epochs are inserted into circular buffer with sequence numbers
-5. **HTTP Request**: Parent polls collector via `GET /collector/batches?after=N`
-6. **Batch Retrieval**: Collector returns batches with sequence > N (up to limit)
-7. **Parent Processing**: Parent processes batches through hierarchical sequencer → fiber processor → storage
-8. **Acknowledgment**: Parent sends `POST /collector/acknowledge` with processed sequence numbers
-9. **Buffer Compaction**: Collector removes acknowledged batches from buffer (periodic, every 10s)
+5. **HTTP Request**: Central instance polls via `GET /collector/batches?after=N`
+6. **Batch Retrieval**: Edge returns batches with sequence > N (up to limit)
+7. **Central Processing**: Central instance processes batches through hierarchical sequencer → fiber processor → storage
+8. **Acknowledgment**: Central instance sends `POST /collector/acknowledge` with processed sequence numbers
+9. **Buffer Compaction**: Edge instance removes acknowledged batches from buffer (periodic, every 10s)
 
 ## Configuration
 
-### Mode Selection
+Noil uses a capability-based configuration model. Distributed deployment features are enabled by the presence of specific config sections — no mode enum is needed.
 
-Add to top of `config.yml`:
+### Collector Serving Configuration
 
-```yaml
-# =============================================================================
-# OPERATION MODE
-# =============================================================================
-# Mode options:
-#   standalone - Single instance with sources, fiber processing, and web UI
-#   collector  - Lightweight instance that reads sources and serves batches
-#   parent     - Instance that pulls from collectors and performs processing
-
-mode: collector  # or: standalone, parent
-```
-
-### Collector Configuration
-
-Add to `config.yml` when `mode: collector`:
+Include the `collector` section to enable serving batched logs to other instances. The collector protocol endpoints (`/collector/*`) are served on the same `web.listen` address as the UI and API.
 
 ```yaml
 # =============================================================================
-# COLLECTOR MODE CONFIGURATION
+# COLLECTOR SERVING (optional)
 # =============================================================================
 collector:
-  # Listen address for collector HTTP API
-  # Clients (parent instances) will connect to this address
-  listen: 127.0.0.1:7105
-
   # Epoch duration: time window for batching logs
   # Longer = fewer network requests, higher latency
   # Shorter = more network requests, lower latency
@@ -204,39 +190,33 @@ collector:
     enabled: true
     interval_seconds: 30
 
-  # Optional: minimal status UI on web.listen address
+  # Optional: minimal status UI
   status_ui:
     enabled: true  # Read-only status page showing buffer, sources, watermarks
-
-# Collector mode still uses these sections:
-#   sources      - Local log files to read
-#   sequencer    - Watermark safety margin, etc.
-#   storage      - Path to local DuckDB for checkpoints (no log storage)
-#   web          - Listen address for status UI (if enabled)
-
-# Collector mode ignores these sections:
-#   fiber_types  - Fiber processing happens on parent
-#   pipeline     - No downstream processor
 ```
 
-### Parent Configuration
+**Requirements**: Must also have `sources` configured (nothing to serve otherwise).
 
-Add to `config.yml` when `mode: parent`:
+**Optional sections**: Omit `fiber_types` to skip local log storage (logs only served to remote instances). Include `fiber_types` to also process and store logs locally.
+
+### Remote Collectors Configuration
+
+Include the `remote_collectors` section to pull logs from remote instances that have collector serving enabled.
 
 ```yaml
 # =============================================================================
-# PARENT MODE CONFIGURATION
+# REMOTE COLLECTORS (optional)
 # =============================================================================
-parent:
-  # Collector endpoints
-  collectors:
+remote_collectors:
+  # Collector endpoints to pull from
+  endpoints:
     - id: collector1             # Unique collector ID
-      url: http://192.168.1.10:7105
+      url: http://192.168.1.10:7104
       retry_interval: 5s         # Retry delay on connection failure
       timeout: 30s               # HTTP request timeout
 
     - id: collector2
-      url: http://192.168.1.11:7105
+      url: http://192.168.1.11:7104
       retry_interval: 5s
       timeout: 30s
 
@@ -246,24 +226,17 @@ parent:
   # Typical: 1s-5s
   poll_interval: 1s
 
-  # Backpressure handling for parent's internal pipeline
+  # Backpressure handling for the internal pipeline
   backpressure:
     strategy: block
     buffer_limit: 10000
-
-# Parent mode still uses these sections:
-#   fiber_types  - Fiber processing rules
-#   pipeline     - Processor and storage writer config
-#   storage      - DuckDB path for logs, fibers, checkpoints
-#   web          - Web UI listen address and settings
-
-# Parent mode ignores this section:
-#   sources      - Parent gets logs from collectors, not files
 ```
+
+**Optional sections**: Include `fiber_types` to enable log storage and fiber processing on the aggregated stream. Can also include `sources` to read local files simultaneously.
 
 ### Config Type Definitions
 
-Add to `src/config/types.rs`:
+From `src/config/types.rs`:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -271,40 +244,31 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_mode")]
-    pub mode: OperationMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collector: Option<CollectorServingConfig>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub collector: Option<CollectorConfig>,
+    pub remote_collectors: Option<RemoteCollectorsConfig>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent: Option<ParentConfig>,
-
-    // Existing fields...
+    #[serde(default)]
     pub sources: HashMap<String, SourceConfig>,
-    pub fiber_types: HashMap<String, FiberTypeConfig>,
+    #[serde(default, deserialize_with = "deserialize_fiber_types")]
+    pub fiber_types: Option<HashMap<String, FiberTypeConfig>>,
     pub pipeline: PipelineConfig,
     pub sequencer: SequencerConfig,
     pub storage: StorageConfig,
     pub web: WebConfig,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OperationMode {
-    Standalone,
-    Collector,
-    Parent,
-}
-
-fn default_mode() -> OperationMode {
-    OperationMode::Standalone
-}
+// Capability helper methods on Config:
+//   has_local_sources()     → !self.sources.is_empty()
+//   has_remote_sources()    → self.remote_collectors has non-empty endpoints
+//   has_collector_serving() → self.collector.is_some()
+//   stores_logs()           → self.fiber_types.is_some()
+//   fiber_types_or_empty()  → returns &HashMap (empty if None)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CollectorConfig {
-    pub listen: String,
-
+pub struct CollectorServingConfig {
     #[serde(with = "humantime_serde")]
     pub epoch_duration: Duration,
 
@@ -342,8 +306,8 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParentConfig {
-    pub collectors: Vec<CollectorEndpoint>,
+pub struct RemoteCollectorsConfig {
+    pub endpoints: Vec<CollectorEndpoint>,
 
     #[serde(with = "humantime_serde")]
     pub poll_interval: Duration,
@@ -892,7 +856,7 @@ Buffer grows without limit. Risk of OOM if parent is down for extended period.
 
 ### Acknowledgment Protocol
 
-**Parent side (simplified pseudocode):**
+**Aggregating instance (simplified pseudocode):**
 
 ```rust
 // Parent polling loop
@@ -1133,16 +1097,16 @@ curl -X POST http://collector:7105/collector/rewind \
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Config Types | `src/config/types.rs` | `OperationMode`, `CollectorConfig`, `ParentConfig` |
-| Collector Runner | `src/cli/run.rs` | Mode dispatch, collector orchestration |
+| Config Types | `src/config/types.rs` | `CollectorServingConfig`, `RemoteCollectorsConfig`, capability helpers |
+| Unified Pipeline | `src/cli/run.rs` | Capability-based pipeline orchestration |
 | Epoch Batcher | `src/collector/epoch_batcher.rs` | Time-windowed batching logic |
 | Batch Buffer | `src/collector/batch_buffer.rs` | Circular buffer with ACK tracking |
 | Batch Types | `src/collector/batch.rs` | `LogBatch`, `EpochInfo` definitions |
 | Collector API | `src/collector/api.rs` | HTTP endpoint handlers |
-| Collector Server | `src/collector/server.rs` | Axum HTTP server |
+| Collector Server | `src/collector/server.rs` | Collector server setup (used in tests) |
 | Collector Client | `src/parent/collector_client.rs` | HTTP client for polling collectors |
 | Collector Stream | `src/parent/collector_stream.rs` | Adapts collector as source stream |
-| Parent Runner | `src/cli/run.rs` | Parent orchestration |
+| Web Server | `src/web/server.rs` | Unified web server (UI + API + collector protocol) |
 | Checkpoint Extensions | `src/storage/checkpoint.rs` | Collector and parent checkpoint types |
 
 ### Sequencer Integration
@@ -1152,7 +1116,7 @@ curl -X POST http://collector:7105/collector/rewind \
 - Each task reads from `SourceReader`
 - Emits `SourceEvent::Record` with watermarks
 
-**Extended for parent mode**:
+**Extended for remote_collectors**:
 - Spawn per-collector tasks instead of per-source tasks
 - Each task reads from `CollectorStream` (implements source-like interface)
 - Emit same `SourceEvent::Record` with watermarks
@@ -1211,7 +1175,7 @@ impl CollectorStream {
 
 ### Scenario 1: Collector Buffer Full
 
-**Trigger**: Parent is slow or unavailable, collector buffer fills to `max_epochs`.
+**Trigger**: Central instance is slow or unavailable, edge instance buffer fills to `max_epochs`.
 
 **Behavior (strategy = block)**:
 1. Buffer rejects new batch with `BufferError::BufferFull`
@@ -1220,7 +1184,7 @@ impl CollectorStream {
 4. Source readers block on channel send
 5. Log reading pauses
 
-**Recovery**: Parent resumes pulling and acknowledging, buffer space freed, reading resumes.
+**Recovery**: Central instance resumes pulling and acknowledging, buffer space freed, reading resumes.
 
 **Behavior (strategy = drop_oldest)**:
 1. Buffer drops oldest unacknowledged batch
@@ -1228,81 +1192,81 @@ impl CollectorStream {
 3. New batch inserted, reading continues
 4. Data loss: logs in dropped batch are permanently lost
 
-### Scenario 2: Parent Crash
+### Scenario 2: Central Instance Crash
 
-**Trigger**: Parent instance crashes or is terminated.
+**Trigger**: Central instance crashes or is terminated.
 
 **Behavior**:
-1. Collectors continue reading, sequencing, batching
-2. Collectors buffer batches (no parent to pull)
+1. Edge instances continue reading, sequencing, batching
+2. Edge instances buffer batches (no central instance to pull)
 3. If buffer fills: depends on strategy (block or drop)
 
 **Recovery**:
-1. Parent restarts
-2. Parent loads checkpoint from database
-3. For each collector, parent requests batches starting from `last_acknowledged_sequence + 1`
-4. Collectors resend unacknowledged batches
-5. Parent processes through fiber processor and storage
-6. Parent acknowledges batches
+1. Central instance restarts
+2. Central instance loads checkpoint from database
+3. For each edge instance, central requests batches starting from `last_acknowledged_sequence + 1`
+4. Edge instances resend unacknowledged batches
+5. Central instance processes through fiber processor and storage
+6. Central instance acknowledges batches
 7. Normal operation resumes
 
 **Data consistency**: Possible duplicates (batches processed but not ACKed before crash). Deduplication via `log_id` (UUID primary key) prevents duplicate storage.
 
-### Scenario 3: Collector Crash
+### Scenario 3: Edge Instance Crash
 
-**Trigger**: Collector instance crashes or is terminated.
+**Trigger**: Edge instance (collector serving) crashes or is terminated.
 
 **Behavior**:
-1. Parent detects HTTP request failures
-2. Parent retries with exponential backoff
+1. Central instance detects HTTP request failures
+2. Central instance retries with exponential backoff
 
 **Recovery**:
-1. Collector restarts
-2. Collector loads checkpoint from database
-3. Collector restores source reader offsets
-4. Collector rebuilds batch buffer by re-sequencing from checkpoint offsets
-5. Collector resumes serving batches
-6. Parent resumes pulling
+1. Edge instance restarts
+2. Edge instance loads checkpoint from database
+3. Edge instance restores source reader offsets
+4. Edge instance rebuilds batch buffer by re-sequencing from checkpoint offsets
+5. Edge instance resumes serving batches
+6. Central instance resumes pulling
 
-**Data consistency**: Collector may resend batches (sequence numbers rebuilt). Parent deduplicates via `log_id`.
+**Data consistency**: Edge instance may resend batches (sequence numbers rebuilt). Central instance deduplicates via `log_id`.
 
 ### Scenario 4: Network Partition
 
-**Trigger**: Network between collector and parent becomes unreachable.
+**Trigger**: Network between edge and central instances becomes unreachable.
 
-**Behavior (collector side)**:
-1. Parent polling fails (no impact on collector)
-2. Collector continues buffering
+**Behavior (edge side)**:
+1. Central polling fails (no impact on edge instance)
+2. Edge instance continues buffering
 3. If buffer fills: depends on strategy
 
-**Behavior (parent side)**:
-1. HTTP requests to collector timeout
-2. Parent retries with exponential backoff (up to `retry_interval`)
-3. Parent continues processing from other collectors
-4. Collector shows as unhealthy in parent's monitoring
+**Behavior (central side)**:
+1. HTTP requests to edge instance timeout
+2. Central retries with exponential backoff (up to `retry_interval`)
+3. Central continues processing from other edge instances
+4. Edge instance shows as unhealthy in monitoring
 
-**Recovery**: Network reconnects, parent resumes polling, batches acknowledged, buffer cleared.
+**Recovery**: Network reconnects, central resumes polling, batches acknowledged, buffer cleared.
 
 ### Scenario 5: Config Change (Fiber Rules)
 
-**Trigger**: Parent instance updates fiber type rules.
+**Trigger**: Central instance updates fiber type rules.
 
 **Desired behavior**: Reprocess historical logs with new rules.
 
 **Implementation**:
-1. Parent persists new config to database
-2. Parent increments config version
-3. Parent requests collectors to rewind to sequence 0 (or specific point)
-4. Collectors rewind, increment generation, resend all batches
-5. Parent processes with new fiber rules
-6. Parent writes to storage with new config version
+1. Central instance persists new config to database
+2. Central instance increments config version
+3. Central instance requests edge instances to rewind to sequence 0 (or specific point)
+4. Edge instances rewind, increment generation, resend all batches
+5. Central instance processes with new fiber rules
+6. Central instance writes to storage with new config version
 7. Old and new fiber memberships coexist (identified by config_version)
 
 **UI**: User can view fibers under different config versions, compare results.
 
 ### Scenario 6: Source File Rotation
 
-**Trigger**: Log file on collector machine is rotated (e.g., logrotate).
+**Trigger**: Log file on edge machine is rotated (e.g., logrotate).
 
 **Behavior**:
 1. Source reader detects inode change on next read
@@ -1312,21 +1276,23 @@ impl CollectorStream {
 
 **Note**: Existing `SourceReader` in `src/source/reader.rs` already handles rotation.
 
-### Scenario 7: Collector Disk Full
+### Scenario 7: Edge Instance Disk Full
 
-**Trigger**: Collector's checkpoint database runs out of disk space.
+**Trigger**: Edge instance's checkpoint database runs out of disk space.
 
 **Behavior**:
 1. Checkpoint write fails
-2. Collector logs error
-3. Collector continues operating without checkpoints
-4. Risk: if collector crashes, loses all buffer state
+2. Instance logs error
+3. Instance continues operating without checkpoints
+4. Risk: if instance crashes, loses all buffer state
 
-**Mitigation**: Monitor collector disk usage, alert on checkpoint failures.
+**Mitigation**: Monitor disk usage, alert on checkpoint failures.
 
 ---
 
 ## Implementation Phases
+
+> **Historical note**: These phases were implemented using the original mode-based architecture (`OperationMode` enum with `Standalone`, `Collector`, `Parent` variants). A subsequent refactor (the "mode unification" effort) replaced the mode enum with capability-based config dispatch, where the presence of `collector`, `remote_collectors`, and `fiber_types` config sections controls which capabilities are enabled. The phase descriptions below retain their original wording for reference.
 
 This section breaks down the implementation into logical, testable phases. Each phase should be completed and tested before moving to the next.
 

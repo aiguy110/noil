@@ -1,14 +1,8 @@
-# Noil Sample Configurations
+# Noil Sample Configuration and Logs
 
-This directory contains sample configurations and log files that demonstrate Noil's features.
+This directory contains a sample configuration and log files that demonstrate Noil's features.
 
-## Available Configurations
-
-### 1. Standalone Mode (sample-config.yml)
-
-Full-featured single-instance deployment with sources, fiber processing, and web UI.
-
-**Use case**: Single machine deployment, all logs on local filesystem.
+## Quick Start
 
 ```bash
 # From the project root
@@ -20,50 +14,28 @@ noil --config samples/sample-config.yml
 
 After starting, the web UI will be available at http://localhost:7104
 
-### 2. Collector Mode (collector-config.yml)
+## Configuration Model
 
-Lightweight deployment for edge nodes that read local logs and serve batches to a parent.
+Noil uses a **capability-based** configuration model. Every instance runs the same binary — capabilities are enabled by which config sections are present:
 
-**Use case**: Deploy on remote machines where logs are generated.
+| Section | Purpose | When to include |
+|---------|---------|-----------------|
+| `sources` | Read local log files | Instance has logs on local disk |
+| `remote_collectors` | Pull logs from remote instances | Instance aggregates from other Noil instances |
+| `collector` | Serve batched logs to other instances | Other instances need to pull from this one |
+| `fiber_types` | Log storage and fiber processing | Instance should store and correlate logs |
 
-```bash
-noil --config samples/collector-config.yml
-```
+At least one input (`sources` or `remote_collectors`) is required. Sections can be freely combined.
 
-The collector's status UI will be available at http://<collector-host>:7105
+## Deployment Patterns
 
-**Key features**:
-- Minimal resource usage (no fiber processing, no full database)
-- HTTP API for parent to pull batches
-- Local buffering for network resilience
-- Checkpoint-based crash recovery
+### Local Processing
 
-### 3. Parent Mode (parent-config.yml)
-
-Central instance that pulls from multiple collectors, performs fiber processing, and provides full UI.
-
-**Use case**: Deploy in a central location to correlate logs from multiple edge nodes.
-
-```bash
-noil --config samples/parent-config.yml
-```
-
-The parent's web UI will be available at http://<parent-host>:7104
-
-**Key features**:
-- Pulls from multiple collectors via HTTP
-- Hierarchical sequencing with watermark-based coordination
-- Full fiber processing and correlation
-- DuckDB storage for all logs and fibers
-- Complete web UI for exploration
-
-## Deployment Architectures
-
-### Single Machine (Standalone Mode)
+Read local files, process fibers, store results. The simplest deployment.
 
 ```
 ┌──────────────────────────────┐
-│   Noil Standalone Instance   │
+│       Noil Instance          │
 │                              │
 │  • Local log sources         │
 │  • Fiber processing          │
@@ -72,29 +44,59 @@ The parent's web UI will be available at http://<parent-host>:7104
 └──────────────────────────────┘
 ```
 
-Use `sample-config.yml`
+**Config sections**: `sources` + `fiber_types` + `pipeline` + `storage` + `web`
 
-### Distributed Deployment (Collector + Parent)
+Use `sample-config.yml` as-is.
+
+### Edge Collector
+
+Read local files and serve batched logs to a central instance. No local fiber processing or log storage.
 
 ```
-      ┌─────────────────────────────────┐
-      │    Parent Instance (Central)    │
-      │  • Fiber processing             │
-      │  • DuckDB storage               │
-      │  • Web UI                       │
-      └──▲─────────────▲────────────▲──┘
-         │             │            │
-         │  HTTP Pull  │  HTTP Pull │  HTTP Pull
-         │             │            │
-    ┌────┴─────┐  ┌───┴──────┐  ┌─┴──────────┐
-    │Collector1│  │Collector2│  │Collector3  │
-    │Edge Node │  │Edge Node │  │Edge Node   │
-    └──────────┘  └──────────┘  └────────────┘
+┌──────────────────────────────┐
+│    Noil Instance (Edge)      │
+│                              │
+│  • Local log sources         │
+│  • Epoch batching + buffer   │
+│  • Collector HTTP API        │
+│  • Status UI                 │
+└──────────────────────────────┘
 ```
 
-Use `collector-config.yml` on edge nodes, `parent-config.yml` centrally.
+**Config sections**: `sources` + `collector` + `storage` (checkpoints only) + `web`
 
-## Quick Start
+Omit `fiber_types` entirely — logs are not stored locally.
+
+### Central Aggregator
+
+Pull from remote collectors, process fibers, store results. No local log files.
+
+```
+┌─────────────────────────────────┐
+│   Noil Instance (Central)       │
+│  • Pulls from remote collectors │
+│  • Fiber processing             │
+│  • DuckDB storage               │
+│  • Web UI                       │
+└──▲───────────────▲──────────▲───┘
+   │               │          │
+   │  HTTP Pull    │          │  HTTP Pull
+   │               │          │
+┌──┴───────┐  ┌───┴──────┐  ┌┴──────────┐
+│Collector1│  │Collector2│  │Collector3  │
+│ Edge VM  │  │ Edge VM  │  │ Edge VM    │
+└──────────┘  └──────────┘  └────────────┘
+```
+
+**Config sections**: `remote_collectors` + `fiber_types` + `pipeline` + `storage` + `web`
+
+Omit `sources` — all log data comes from remote collectors.
+
+### Full Combo
+
+An instance that reads local files, pulls from remote collectors, serves to other instances, and processes fibers. All capabilities enabled simultaneously.
+
+**Config sections**: `sources` + `remote_collectors` + `collector` + `fiber_types` + `pipeline` + `storage` + `web`
 
 ## Sample Log Files
 

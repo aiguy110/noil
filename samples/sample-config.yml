@@ -4,20 +4,32 @@
 # This configuration demonstrates all major features of Noil using sample logs
 # in the samples/logs/ directory.
 #
+# Noil uses a capability-based configuration model. Each instance runs the same
+# binary — capabilities are enabled by which config sections are present:
+#
+#   sources:             Read local log files (optional)
+#   remote_collectors:   Pull logs from remote Noil instances (optional)
+#   collector:           Serve batched logs to other Noil instances (optional)
+#   fiber_types:         Enable log storage and fiber processing (optional)
+#
+# At least one input (sources or remote_collectors) must be configured.
+# Sections can be freely combined for different deployment patterns.
+#
 # To run with this config:
 #   cargo run -- --config samples/sample-config.yml
 #
-# Expected behavior:
-# - 3 request_trace fibers will be created (one per request across program1/2)
+# Expected behavior with this config:
+# - 3 request_trace fibers (one per request across program1/2)
 # - Multiple simple_log fibers (grouped by REQUEST START...END OF REQUEST)
-# - 4 auto-generated *_all fibers (one per source: program1_all, program2_all,
-#   nginx_access_all, simple_service_all) - these provide convenient navigation
-#   starting points in the UI
-# - Logs will be correlated via MAC addresses, thread IDs, and IP addresses
+# - 4 auto-generated *_all fibers (one per source)
+# - Logs correlated via MAC addresses, thread IDs, and IP addresses
 
 # =============================================================================
-# SOURCES
+# SOURCES (optional)
 # =============================================================================
+# Define local log files to ingest. Each source needs a unique ID and timestamp
+# config. Omit this section entirely if this instance only pulls from remote
+# collectors.
 
 sources:
   # Program 1: Frontend proxy that receives client connections
@@ -68,6 +80,50 @@ sources:
       follow: false
 
 # =============================================================================
+# REMOTE COLLECTORS (optional)
+# =============================================================================
+# Pull logs from remote Noil instances that have collector serving enabled.
+# Omit this section if this instance only reads local files.
+#
+# Uncomment the section below to enable pulling from remote collectors:
+#
+# remote_collectors:
+#   endpoints:
+#     - id: node1                    # Unique identifier for this collector
+#       url: http://10.0.0.1:7104   # URL of the remote instance
+#       retry_interval: 5s           # Retry delay on connection failure
+#       timeout: 30s                 # HTTP request timeout
+#     - id: node2
+#       url: http://10.0.0.2:7104
+#       retry_interval: 5s
+#       timeout: 30s
+#   poll_interval: 1s               # How often to check for new batches
+#   backpressure:
+#     strategy: block
+#     buffer_limit: 10000
+
+# =============================================================================
+# COLLECTOR SERVING (optional)
+# =============================================================================
+# Serve batched, ordered logs to other Noil instances via the /collector/* HTTP
+# API on the web.listen address. Requires local sources to have something to
+# serve. Omit this section if this instance does not need to serve logs.
+#
+# Uncomment the section below to enable collector serving:
+#
+# collector:
+#   # Time window for batching logs before serving
+#   epoch_duration: 10s
+#   buffer:
+#     max_epochs: 100              # Max epochs to buffer before overflow
+#     strategy: block              # block | drop_oldest | wait_forever
+#   checkpoint:
+#     enabled: true
+#     interval_seconds: 30
+#   status_ui:
+#     enabled: true                # Read-only status page
+
+# =============================================================================
 # AUTO-GENERATED SOURCE FIBERS
 # =============================================================================
 # By default, Noil automatically creates a fiber type for each source named
@@ -83,8 +139,12 @@ sources:
 # to override the auto-generated version with custom settings.
 
 # =============================================================================
-# FIBER TYPES
+# FIBER TYPES (optional)
 # =============================================================================
+# Define rules for correlating logs into fibers. The presence of this section
+# (even if empty) enables log storage and fiber processing. Omitting it
+# entirely means logs flow through but are not stored — useful for instances
+# that only serve as collectors.
 
 fiber_types:
   # Correlates requests across program1 (frontend) and program2 (backend)
@@ -238,6 +298,7 @@ storage:
 # =============================================================================
 # WEB SERVER SETTINGS
 # =============================================================================
+# Single listen address for web UI, API, and collector protocol (if enabled).
 
 web:
   listen: 127.0.0.1:7104

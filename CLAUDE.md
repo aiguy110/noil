@@ -108,7 +108,14 @@ Remote Agents → Site Sequencers → Central Sequencer → Raw Log Store
 
 ## Configuration
 
-All configuration lives in a single `config.yml` file. The file is divided into sections for sources, fiber types, pipeline settings, storage, and web server.
+All configuration lives in a single `config.yml` file. Noil uses a capability-based configuration model — capabilities are enabled by which config sections are present:
+
+- `sources`: Read local log files (optional)
+- `remote_collectors`: Pull logs from remote Noil instances (optional)
+- `collector`: Serve batched logs to other Noil instances (optional)
+- `fiber_types`: Enable log storage and fiber processing (optional; presence controls storage)
+
+At least one input (`sources` or `remote_collectors`) must be configured.
 
 **⚠️ IMPORTANT FOR AI AGENTS**: Noil's configuration system is fundamentally different from typical application configs. The raw YAML string (with comments and formatting) is the ground truth, NOT the deserialized structs. Configuration changes from the UI are persisted ONLY to the database, and startup reconciliation uses git-style 3-way merging. **See [specs/CONFIG_SYSTEM.md](specs/CONFIG_SYSTEM.md) for critical details before working on any config-related task.**
 
@@ -156,9 +163,42 @@ sources:
       follow: true
 
 # =============================================================================
-# FIBER TYPES
+# REMOTE COLLECTORS (optional)
 # =============================================================================
-# Define rules for correlating logs into fibers. Each fiber type specifies:
+# Pull logs from remote Noil instances that have collector serving enabled.
+# Omit this section if this instance only reads local files.
+
+# remote_collectors:
+#   endpoints:
+#     - id: node1
+#       url: http://10.0.0.1:7104
+#       retry_interval: 5s
+#       timeout: 30s
+#   poll_interval: 1s
+#   backpressure:
+#     strategy: block
+#     buffer_limit: 10000
+
+# =============================================================================
+# COLLECTOR SERVING (optional)
+# =============================================================================
+# Serve batched logs to other Noil instances via /collector/* HTTP API.
+# Requires local sources. Omit if this instance does not serve logs.
+
+# collector:
+#   epoch_duration: 10s
+#   buffer:
+#     max_epochs: 100
+#     strategy: block
+#   checkpoint:
+#     enabled: true
+#     interval_seconds: 30
+
+# =============================================================================
+# FIBER TYPES (optional)
+# =============================================================================
+# Define rules for correlating logs into fibers. Presence of this section
+# (even if empty) enables log storage and fiber processing. Each fiber type specifies:
 #   - Temporal constraints (max time gap between related logs)
 #   - Attributes (extracted from logs or derived via interpolation)
 #   - Keys (attributes used for fiber matching/merging)
@@ -286,7 +326,7 @@ pipeline:
 # =============================================================================
 
 sequencer:
-  # For distributed mode: duration of each batch epoch
+  # Duration of each batch epoch (used for distributed deployments)
   batch_epoch_duration: 10s
   # Safety margin when computing watermarks
   watermark_safety_margin: 1s
@@ -308,7 +348,7 @@ storage:
 # =============================================================================
 
 web:
-  # Address to bind the web UI
+  # Address to bind web UI, API, and collector protocol (if enabled)
   listen: 127.0.0.1:7104
   # Set to 0.0.0.0:7104 to allow external connections
 ```
@@ -467,7 +507,7 @@ First iteration does not support hot reload, but design should not preclude it:
 ### Error Handling
 
 - Parse errors: configurable (`drop` or `panic`)
-- Network errors in distributed mode: retry with backoff, wait forever for first pass
+- Network errors in distributed deployments: retry with backoff, wait forever for first pass
 - Storage write errors: retry with backoff, block pipeline on persistent failure
 
 ### Development Environment: Termux
@@ -532,7 +572,7 @@ Checkpoints are stored in the DuckDB database and written periodically based on 
 ## Additional Documentation
 
 - **[specs/CONFIG_SYSTEM.md](specs/CONFIG_SYSTEM.md)**: **CRITICAL for AI agents** - Comprehensive explanation of Noil's unusual configuration system: YAML-as-ground-truth, database persistence, git-style 3-way merging, and version control. **Must read before working on any config-related task.**
-- **[specs/COLLECTOR_MODE.md](specs/COLLECTOR_MODE.md)**: **Collector/Parent Architecture** - Complete specification for distributed deployments: network protocol, epoch batching, backpressure, checkpointing, failure scenarios, and implementation phases. Read this before working on collector or parent mode features.
+- **[specs/COLLECTOR_MODE.md](specs/COLLECTOR_MODE.md)**: **Distributed Deployment Architecture** - Complete specification for distributed deployments: network protocol, epoch batching, backpressure, checkpointing, and failure scenarios. Read this before working on `collector` serving or `remote_collectors` features.
 - **[docs/FIBER_PROCESSING.md](docs/FIBER_PROCESSING.md)**: Detailed explanation of fiber correlation semantics, the key/attribute model, session control actions, and worked examples.
 
 ## File Structure
