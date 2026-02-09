@@ -26,12 +26,27 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Cache Cargo and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate caches for debug/release builds
+          key: ${{ steps.tag_check.outputs.is_release }}
+
       - name: Build (debug)
         if: steps.tag_check.outputs.is_release == 'false'
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
         run: cargo build --locked
 
       - name: Build (release)
         if: steps.tag_check.outputs.is_release == 'true'
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
         run: cargo build --locked --release
 
       - name: Upload artifact
@@ -57,10 +72,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache Cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-glibc217-target-${{ steps.tag_check.outputs.is_release }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-glibc217-target-${{ steps.tag_check.outputs.is_release }}-
+            ${{ runner.os }}-glibc217-target-
+
       - name: Build (debug) in manylinux2014 container
         if: steps.tag_check.outputs.is_release == 'false'
         run: |
-          docker run --rm -v "${GITHUB_WORKSPACE}:/work" -w /work quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
+          mkdir -p ~/.cargo
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -v "${HOME}/.cargo:/root/.cargo" \
+            -w /work \
+            quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
             yum -y install curl gcc gcc-c++ git make openssl-devel pkgconfig
             curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
             source "$HOME/.cargo/env"
@@ -76,7 +116,12 @@ jobs:
       - name: Build (release) in manylinux2014 container
         if: steps.tag_check.outputs.is_release == 'true'
         run: |
-          docker run --rm -v "${GITHUB_WORKSPACE}:/work" -w /work quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
+          mkdir -p ~/.cargo
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -v "${HOME}/.cargo:/root/.cargo" \
+            -w /work \
+            quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
             yum -y install curl gcc gcc-c++ git make openssl-devel pkgconfig
             curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
             source "$HOME/.cargo/env"
