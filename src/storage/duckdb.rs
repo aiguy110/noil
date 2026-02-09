@@ -72,6 +72,12 @@ impl DuckDbStorage {
         // First attempt to open the connection
         match Connection::open(path) {
             Ok(conn) => {
+                // Disable auto-install to avoid network calls
+                // The json extension is built-in with the 'bundled' feature
+                if let Err(e) = conn.execute("SET autoinstall_known_extensions = false", []) {
+                    tracing::warn!("Failed to disable auto-install: {}", e);
+                }
+
                 return Ok(Self {
                     conn: Arc::new(Mutex::new(conn)),
                 });
@@ -99,6 +105,12 @@ impl DuckDbStorage {
                             // Retry opening the connection
                             tracing::info!("Retrying database connection after removing stale locks");
                             let conn = Connection::open(path)?;
+
+                            // Disable auto-install to avoid network calls
+                            if let Err(e) = conn.execute("SET autoinstall_known_extensions = false", []) {
+                                tracing::warn!("Failed to disable auto-install: {}", e);
+                            }
+
                             return Ok(Self {
                                 conn: Arc::new(Mutex::new(conn)),
                             });
@@ -117,6 +129,12 @@ impl DuckDbStorage {
     /// Create an in-memory DuckDB storage instance (for testing)
     pub fn in_memory() -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory()?;
+
+        // Disable auto-install to avoid network calls
+        if let Err(e) = conn.execute("SET autoinstall_known_extensions = false", []) {
+            tracing::warn!("Failed to disable auto-install: {}", e);
+        }
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
