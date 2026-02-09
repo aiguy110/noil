@@ -23,68 +23,58 @@ Noil is a log correlation system that ingests logs from multiple sources, sequen
 - **Logical clock**: Fiber timeouts use log timestamps, not wall clock. Historical replay is deterministic.
 - **Dynamic keys**: Fiber keys enable matching while open, then release on close. Attributes persist. This handles identifier reuse (e.g., thread IDs recycled between requests).
 - **Single binary**: Sequencer, fiber processor, storage, and web UI ship as one `noil` executable.
-- **Distributed deployment**: Supports collector/parent architecture for correlating logs from multiple remote machines.
+- **Distributed deployment**: Supports distributed collection and central correlation of logs from multiple remote machines.
 
-## Deployment Modes
+## Capabilities
 
-Noil supports three operation modes:
+Noil uses a capability-based configuration model. Every instance runs the same binary — capabilities are determined by which config sections are present:
 
-### Standalone Mode (Default)
+| Config section | Capability |
+|---|---|
+| `sources` | Read local log files |
+| `remote_collectors` | Pull logs from remote Noil instances |
+| `collector` | Serve batched logs to other Noil instances |
+| `fiber_types` | Store logs and run fiber processing |
 
-Single-instance deployment with local sources, fiber processing, and web UI. Best for:
-- Single machine deployments
-- Development and testing
-- All logs on local filesystem
+At least one input (`sources` or `remote_collectors`) must be configured. Sections can be freely combined — a single instance can read local files, pull from remote collectors, serve logs to others, and run fiber processing all at once.
 
-```bash
-noil --config config.yml  # mode: standalone
+### Common deployment patterns
+
+**Local analysis** — read local files with fiber processing:
+```yaml
+sources: { ... }
+fiber_types: { ... }
 ```
 
-### Collector Mode
-
-Lightweight instance that reads local logs and serves batched, ordered streams to a parent via HTTP. Best for:
-- Edge nodes and remote machines
-- Minimal resource footprint (no fiber processing, no full database)
-- Network-resilient buffering
-
-```bash
-noil --config collector-config.yml  # mode: collector
+**Edge collector** — read local files and serve them to a central instance (no storage):
+```yaml
+sources: { ... }
+collector: { ... }
 ```
 
-**Key features**:
-- Reads local log sources
-- Sequences into global timestamp order
-- Batches into time-windowed epochs
-- Serves batches via HTTP API
-- Buffers locally during network issues
-- Checkpoint-based crash recovery
-
-### Parent Mode
-
-Central instance that pulls from multiple collectors, performs fiber processing, and provides the full UI. Best for:
-- Central correlation point for distributed logs
-- Multi-site deployments
-- Centralized fiber processing and storage
-
-```bash
-noil --config parent-config.yml  # mode: parent
+**Central correlator** — pull from remote collectors, store and process:
+```yaml
+remote_collectors: { ... }
+fiber_types: { ... }
 ```
 
-**Key features**:
-- Pulls batches from multiple collectors
-- Hierarchical sequencing with watermark coordination
-- Full fiber processing and correlation
-- DuckDB storage for all logs and fibers
-- Complete web UI for exploration
+**Hybrid** — read local files, pull from remote collectors, serve to others, and process:
+```yaml
+sources: { ... }
+remote_collectors: { ... }
+collector: { ... }
+fiber_types: { ... }
+```
 
-### Example Distributed Architecture
+### Example distributed architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │              Central Data Center                     │
 │                                                       │
 │  ┌─────────────────────────────────────────────┐   │
-│  │           Parent Instance                    │   │
+│  │         Central Instance                     │   │
+│  │  remote_collectors + fiber_types             │   │
 │  │  • Merges collector streams                  │   │
 │  │  • Fiber processing                          │   │
 │  │  • DuckDB storage                            │   │
@@ -98,12 +88,14 @@ noil --config parent-config.yml  # mode: parent
 ┌─────┴────┐    ┌────┴─────┐    ┌────┴─────┐
 │Collector1│    │Collector2│    │Collector3│
 │ Edge VM  │    │ Edge VM  │    │ Edge VM  │
+│sources + │    │sources + │    │sources + │
+│collector │    │collector │    │collector │
 └──────────┘    └──────────┘    └──────────┘
 ```
 
-See `samples/collector-config.yml` and `samples/parent-config.yml` for complete examples.
+See `samples/sample-config.yml` for a complete example with all sections documented.
 
-For detailed collector mode architecture, protocol specification, and implementation details, see [specs/COLLECTOR_MODE.md](specs/COLLECTOR_MODE.md).
+For distributed deployment details (protocol, epoch batching, backpressure), see [specs/COLLECTOR_MODE.md](specs/COLLECTOR_MODE.md).
 
 ## Status
 
