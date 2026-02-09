@@ -2,7 +2,7 @@ use dialoguer::Input;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn init(stdout: bool, interactive: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init(stdout: bool, interactive: bool, output_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     if interactive {
         let result = crate::cli::interactive::run_interactive(stdout)?;
         return match result.output_path {
@@ -20,59 +20,52 @@ pub fn init(stdout: bool, interactive: bool) -> Result<(), Box<dyn std::error::E
     let config_content = fs::read_to_string(&sample_path)
         .map_err(|e| format!("Failed to read sample config: {}", e))?;
 
-    write_config(&config_content, stdout)
+    write_config(&config_content, stdout, output_path)
 }
 
-fn write_config(config_content: &str, stdout: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn write_config(config_content: &str, stdout: bool, output_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     if stdout {
         print!("{}", config_content);
-        Ok(())
-    } else {
-        // Try to write to ~/.config/noil/config.yml first
-        let config_path = if let Some(home_dir) = dirs::home_dir() {
-            let user_config = home_dir.join(".config/noil/config.yml");
+        return Ok(());
+    }
 
-            // Create parent directory if it doesn't exist
-            if let Some(parent) = user_config.parent() {
-                match fs::create_dir_all(parent) {
-                    Ok(_) => Some(user_config),
-                    Err(_) => {
-                        // Fall back to /etc/noil/config.yml
-                        eprintln!("Warning: Could not create directory {}", parent.display());
-                        eprintln!("Falling back to /etc/noil/config.yml");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let config_path = config_path.unwrap_or_else(|| PathBuf::from("/etc/noil/config.yml"));
-
-        // Check if file already exists
-        if config_path.exists() {
-            eprintln!(
-                "Error: Config file already exists at {}",
-                config_path.display()
-            );
-            eprintln!("Remove it first or use --stdout to print the config");
-            std::process::exit(1);
-        }
-
-        // Create parent directory for /etc/noil if needed
-        if let Some(parent) = config_path.parent() {
+    // If output_path is specified, write directly there without prompting
+    if let Some(path) = output_path {
+        // Create parent directory if needed
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-
-        // Write the config file
-        fs::write(&config_path, config_content)?;
-
-        println!("Config file written to {}", config_path.display());
-        Ok(())
+        fs::write(&path, config_content)?;
+        println!("Config file written to {}", path.display());
+        return Ok(());
     }
+
+    // Otherwise, use default path resolution and prompt if file exists
+    let config_path = resolve_default_config_path()?;
+
+    // Use interactive write to handle prompting
+    write_config_interactive(config_content, config_path)
+}
+
+fn resolve_default_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Try to write to ~/.config/noil/config.yml first
+    if let Some(home_dir) = dirs::home_dir() {
+        let user_config = home_dir.join(".config/noil/config.yml");
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = user_config.parent() {
+            match fs::create_dir_all(parent) {
+                Ok(_) => return Ok(user_config),
+                Err(_) => {
+                    // Fall back to /etc/noil/config.yml
+                    eprintln!("Warning: Could not create directory {}", parent.display());
+                    eprintln!("Falling back to /etc/noil/config.yml");
+                }
+            }
+        }
+    }
+
+    Ok(PathBuf::from("/etc/noil/config.yml"))
 }
 
 fn write_config_interactive(config_content: &str, mut path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {

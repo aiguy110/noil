@@ -8,9 +8,22 @@ fn test_generated_config_is_valid() {
     let config_path = temp_dir.path().join("config.yml");
 
     let config_content = generate_starter_config();
-    fs::write(&config_path, config_content).unwrap();
+
+    // Generated config must not contain any mode-based references
+    assert!(!config_content.contains("\nmode:"), "Generated config should not have a mode field");
+    assert!(!config_content.contains("parent:"), "Generated config should not have a parent section");
+
+    fs::write(&config_path, &config_content).unwrap();
 
     let config = load_config(&config_path).expect("Generated config should be valid");
+
+    // Capability-based checks
+    assert!(config.has_local_sources());
+    assert!(!config.has_remote_sources());
+    assert!(!config.has_collector_serving());
+    assert!(config.stores_logs());
+    assert!(config.collector.is_none());
+    assert!(config.remote_collectors.is_none());
 
     assert_eq!(config.sources.len(), 5);
     // 2 explicit fiber types + 5 auto-generated source fibers (one per source)
@@ -1160,4 +1173,468 @@ web:
 
     // Clean up
     env::remove_var("NOIL_SUBDIR");
+}
+
+// =============================================================================
+// Capability-based config model tests
+// =============================================================================
+
+#[test]
+fn test_fiber_types_absent_means_no_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with no fiber_types key at all — should mean no log storage
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: /tmp/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    assert!(!config.stores_logs(), "fiber_types absent should mean no log storage");
+    assert!(config.fiber_types.is_none());
+    assert!(config.fiber_types_or_empty().is_empty());
+    assert!(config.has_local_sources());
+}
+
+#[test]
+fn test_fiber_types_null_enables_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with `fiber_types:` (null/empty value) — should enable storage with no rules
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: /tmp/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+fiber_types:
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    assert!(config.stores_logs(), "fiber_types: (null) should enable log storage");
+    assert!(config.fiber_types.is_some());
+    // With auto_source_fibers=true (default), should have 1 auto-generated source fiber
+    assert_eq!(config.fiber_types_or_empty().len(), 1);
+}
+
+#[test]
+fn test_fiber_types_empty_map_enables_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with `fiber_types: {}` — should enable storage with no rules
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: /tmp/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+auto_source_fibers: false
+fiber_types: {}
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Config should be valid");
+
+    assert!(config.stores_logs(), "fiber_types: {{}} should enable log storage");
+    assert!(config.fiber_types.is_some());
+    assert!(config.fiber_types_or_empty().is_empty(), "No fiber types defined (auto disabled)");
+}
+
+#[test]
+fn test_all_capabilities_simultaneously() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with all four capabilities enabled simultaneously
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: /tmp/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+remote_collectors:
+  endpoints:
+    - id: node1
+      url: http://10.0.0.1:7104
+      retry_interval: 5s
+      timeout: 30s
+  poll_interval: 1s
+  backpressure:
+    strategy: block
+    buffer_limit: 10000
+
+collector:
+  epoch_duration: 10s
+  buffer:
+    max_epochs: 100
+    strategy: block
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources:
+      test_source:
+        patterns:
+          - regex: 'test'
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("All capabilities simultaneously should be valid");
+
+    assert!(config.has_local_sources());
+    assert!(config.has_remote_sources());
+    assert!(config.has_collector_serving());
+    assert!(config.stores_logs());
+}
+
+#[test]
+fn test_collector_serving_without_sources_is_invalid() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Collector serving enabled but no local sources — nothing to serve
+    let config_yaml = r#"
+sources: {}
+
+remote_collectors:
+  endpoints:
+    - id: node1
+      url: http://10.0.0.1:7104
+      retry_interval: 5s
+      timeout: 30s
+  poll_interval: 1s
+  backpressure:
+    strategy: block
+    buffer_limit: 10000
+
+collector:
+  epoch_duration: 10s
+  buffer:
+    max_epochs: 100
+    strategy: block
+
+fiber_types: {}
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let result = load_config(&config_path);
+    assert!(result.is_err(), "Collector serving without local sources should fail validation");
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("collector serving requires local sources"),
+        "Unexpected error: {err_msg}"
+    );
+}
+
+#[test]
+fn test_no_inputs_is_invalid() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // No sources and no remote_collectors — must have at least one input
+    let config_yaml = r#"
+sources: {}
+
+fiber_types: {}
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let result = load_config(&config_path);
+    assert!(result.is_err(), "Config with no inputs should fail validation");
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("at least one input"),
+        "Unexpected error: {err_msg}"
+    );
+}
+
+#[test]
+fn test_remote_only_config() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with only remote_collectors and fiber_types — no local sources
+    let config_yaml = r#"
+sources: {}
+
+remote_collectors:
+  endpoints:
+    - id: node1
+      url: http://10.0.0.1:7104
+      retry_interval: 5s
+      timeout: 30s
+  poll_interval: 1s
+  backpressure:
+    strategy: block
+    buffer_limit: 10000
+
+fiber_types:
+  test_fiber:
+    temporal:
+      max_gap: 5s
+    attributes:
+      - name: foo
+        type: string
+    sources: {}
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Remote-only config should be valid");
+
+    assert!(!config.has_local_sources());
+    assert!(config.has_remote_sources());
+    assert!(!config.has_collector_serving());
+    assert!(config.stores_logs());
+}
+
+#[test]
+fn test_collector_only_config() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.yml");
+
+    // Config with sources + collector serving, but no fiber_types (pure collector)
+    let config_yaml = r#"
+sources:
+  test_source:
+    type: file
+    path: /tmp/test.log
+    timestamp:
+      pattern: '^(?P<ts>\d{4})'
+      format: '%Y'
+    read:
+      start: beginning
+      follow: true
+
+collector:
+  epoch_duration: 10s
+  buffer:
+    max_epochs: 100
+    strategy: block
+
+pipeline:
+  backpressure:
+    strategy: block
+  errors:
+    on_parse_error: drop
+  checkpoint:
+    enabled: true
+    interval_seconds: 30
+
+sequencer:
+  batch_epoch_duration: 10s
+  watermark_safety_margin: 1s
+
+storage:
+  path: /tmp/test.duckdb
+  batch_size: 1000
+  flush_interval_seconds: 5
+
+web:
+  listen: 127.0.0.1:7104
+"#;
+
+    fs::write(&config_path, config_yaml).unwrap();
+
+    let config = load_config(&config_path).expect("Collector-only config should be valid");
+
+    assert!(config.has_local_sources());
+    assert!(!config.has_remote_sources());
+    assert!(config.has_collector_serving());
+    assert!(!config.stores_logs(), "No fiber_types section means no log storage");
 }

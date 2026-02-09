@@ -30,6 +30,9 @@ enum ConfigAction {
 
         #[arg(long, help = "Interactively configure sources and settings")]
         interactive: bool,
+
+        #[arg(long, help = "Write config to specified path (overwrites if exists)")]
+        output_path: Option<PathBuf>,
     },
     Validate,
 }
@@ -57,8 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             noil::cli::run::run(config_path).await?;
         }
         Some(Commands::Config { action }) => match action {
-            ConfigAction::Init { stdout, interactive } => {
-                noil::cli::config::init(stdout, interactive)?;
+            ConfigAction::Init { stdout, interactive, output_path } => {
+                noil::cli::config::init(stdout, interactive, output_path)?;
             }
             ConfigAction::Validate => {
                 noil::cli::config::validate(config_path)?;

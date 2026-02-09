@@ -4,31 +4,28 @@ pub fn generate_starter_config() -> String {
 # =============================================================================
 # This file configures log sources, fiber correlation rules, and system settings.
 #
+# Noil uses a capability-based configuration model. Each instance runs the same
+# binary — capabilities are enabled by which config sections are present:
+#
+#   sources:             Read local log files (optional)
+#   remote_collectors:   Pull logs from remote Noil instances (optional)
+#   collector:           Serve batched logs to other Noil instances (optional)
+#   fiber_types:         Enable log storage and fiber processing (optional)
+#
+# At least one input (sources or remote_collectors) must be configured.
+# Sections can be freely combined for different deployment patterns.
+#
 # Config file locations (in order of precedence):
 #   1. Path specified via --config argument
 #   2. ~/.config/noil/config.yml
 #   3. /etc/noil/config.yml
 
 # =============================================================================
-# OPERATION MODE
+# SOURCES (optional)
 # =============================================================================
-# Mode options:
-#   standalone - Single instance with sources, fiber processing, and web UI (default)
-#   collector  - Lightweight instance that reads sources and serves batches to parent
-#   parent     - Instance that pulls from collectors and performs fiber processing
-#
-# For most deployments, use standalone mode. For distributed deployments with
-# logs on remote machines, run collectors on edge nodes and parent in a central
-# location. See COLLECTOR_MODE.md for detailed architecture.
-
-mode: standalone  # or: collector, parent
-
-# =============================================================================
-# SOURCES
-# =============================================================================
-# Define log files to ingest. Each source needs a unique ID and timestamp config.
-# Required for: standalone, collector modes
-# Ignored for: parent mode (gets logs from collectors instead)
+# Define local log files to ingest. Each source needs a unique ID and timestamp
+# config. Omit this section entirely if this instance only pulls from remote
+# collectors.
 
 sources:
   nginx_access:
@@ -86,6 +83,45 @@ sources:
       follow: true
 
 # =============================================================================
+# REMOTE COLLECTORS (optional)
+# =============================================================================
+# Pull logs from remote Noil instances that have collector serving enabled.
+# Omit this section if this instance only reads local files.
+#
+# remote_collectors:
+#   endpoints:
+#     - id: node1                    # Unique identifier for this collector
+#       url: http://10.0.0.1:7104   # URL of the remote instance
+#       retry_interval: 5s           # Retry delay on connection failure
+#       timeout: 30s                 # HTTP request timeout
+#     - id: node2
+#       url: http://10.0.0.2:7104
+#       retry_interval: 5s
+#       timeout: 30s
+#   poll_interval: 1s               # How often to check for new batches
+#   backpressure:
+#     strategy: block
+#     buffer_limit: 10000
+
+# =============================================================================
+# COLLECTOR SERVING (optional)
+# =============================================================================
+# Serve batched, ordered logs to other Noil instances via the /collector/* HTTP
+# API on the web.listen address. Requires local sources to have something to
+# serve. Omit this section if this instance does not need to serve logs.
+#
+# collector:
+#   epoch_duration: 10s
+#   buffer:
+#     max_epochs: 100              # Max epochs to buffer before overflow
+#     strategy: block              # block | drop_oldest | wait_forever
+#   checkpoint:
+#     enabled: true
+#     interval_seconds: 30
+#   status_ui:
+#     enabled: true                # Read-only status page
+
+# =============================================================================
 # AUTO-GENERATED SOURCE FIBERS
 # =============================================================================
 # By default, Noil automatically creates a fiber type for each source named
@@ -101,13 +137,12 @@ sources:
 # the auto-generated version with custom settings.
 
 # =============================================================================
-# FIBER TYPES
+# FIBER TYPES (optional)
 # =============================================================================
-# Define rules for correlating logs into fibers. Each fiber type specifies:
-#   - Temporal constraints (max time gap between related logs)
-#   - Attributes (extracted from logs or derived via interpolation)
-#   - Keys (attributes used for fiber matching/merging)
-#   - Per-source patterns for matching and extraction
+# Define rules for correlating logs into fibers. The presence of this section
+# (even if empty) enables log storage and fiber processing. Omitting it
+# entirely means logs flow through but are not stored — useful for instances
+# that only serve as collectors.
 
 fiber_types:
   request_trace:
@@ -194,79 +229,6 @@ fiber_types:
           - regex: '.+'  # Match any line
 
 # =============================================================================
-# COLLECTOR MODE CONFIGURATION (only for mode: collector)
-# =============================================================================
-# Uncomment and configure this section when running in collector mode.
-# Collectors are lightweight instances that read local log files and serve
-# batched, ordered logs to a parent instance via HTTP.
-
-# collector:
-#   # Listen address for collector HTTP API
-#   # Parent instances will connect to this address to pull batches
-#   listen: 0.0.0.0:7105
-#
-#   # Epoch duration: time window for batching logs
-#   # Longer = fewer network requests, higher latency
-#   # Shorter = more network requests, lower latency
-#   # Typical: 5s-30s
-#   epoch_duration: 10s
-#
-#   # Buffer configuration
-#   buffer:
-#     # Maximum number of epochs to buffer before applying overflow strategy
-#     # Each epoch consumes memory proportional to log volume in that window
-#     # Typical: 50-200 epochs (5-30 minutes of logs at 10s/epoch)
-#     max_epochs: 100
-#
-#     # Strategy when buffer is full:
-#     #   block        - Block source readers (backpressure)
-#     #                  No data loss, but sources stop advancing
-#     #   drop_oldest  - Drop oldest unacknowledged batch
-#     #                  Allows progress, but loses historical data
-#     #   wait_forever - Unlimited buffer growth (risk of OOM)
-#     strategy: block
-#
-#   # Checkpoint configuration (saves to local database)
-#   checkpoint:
-#     enabled: true
-#     interval_seconds: 30
-#
-#   # Optional: minimal status UI on web.listen address
-#   status_ui:
-#     enabled: true  # Read-only status page showing buffer, sources, watermarks
-
-# =============================================================================
-# PARENT MODE CONFIGURATION (only for mode: parent)
-# =============================================================================
-# Uncomment and configure this section when running in parent mode.
-# Parents pull batches from multiple collectors and perform centralized
-# fiber processing and storage.
-
-# parent:
-#   # Collector endpoints to pull from
-#   collectors:
-#     - id: collector1             # Unique collector ID
-#       url: http://192.168.1.10:7105
-#       retry_interval: 5s         # Retry delay on connection failure
-#       timeout: 30s               # HTTP request timeout
-#
-#     - id: collector2
-#       url: http://192.168.1.11:7105
-#       retry_interval: 5s
-#       timeout: 30s
-#
-#   # Polling interval: how often to check collectors for new batches
-#   # Lower = lower latency, higher network overhead
-#   # Higher = higher latency, lower network overhead
-#   # Typical: 1s-5s
-#   poll_interval: 1s
-#
-#   # Backpressure handling for parent's internal pipeline
-#   backpressure:
-#     strategy: block
-#     buffer_limit: 10000
-
-# =============================================================================
 # PIPELINE SETTINGS
 # =============================================================================
 
@@ -289,9 +251,7 @@ pipeline:
 # =============================================================================
 
 sequencer:
-  # For distributed mode: duration of each batch epoch
   batch_epoch_duration: 10s
-  # Safety margin when computing watermarks
   watermark_safety_margin: 1s
 
 # =============================================================================
@@ -309,9 +269,9 @@ storage:
 # =============================================================================
 # WEB SERVER SETTINGS
 # =============================================================================
+# Single listen address for web UI, API, and collector protocol (if enabled).
 
 web:
-  # Address to bind the web UI
   listen: 127.0.0.1:7104
   # Set to 0.0.0.0:7104 to allow external connections
 "#
